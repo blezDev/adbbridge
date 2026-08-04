@@ -1,0 +1,19 @@
+<Window x:Class="AdbBridge.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AdbBridge" Height="680" Width="640"
+        MinHeight="580" MinWidth="580">
+    <DockPanel>
+        <Border x:Name="UpdateBanner" DockPanel.Dock="Top" Background="#FFF4CE" BorderBrush="#E8C468"
+                BorderThickness="0,0,0,1" Padding="12,7" Visibility="Collapsed">
+            <DockPanel>
+                <Button x:Name="UpdateDismissButton" Content="Dismiss" DockPanel.Dock="Right" Padding="8,2"
+                        Margin="6,0,0,0" Click="UpdateDismissButton_Click"/>
+                <Button x:Name="UpdateDownloadButton" Content="View release" DockPanel.Dock="Right" Padding="8,2"
+                        Click="UpdateDownloadButton_Click"/>
+                <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center" Text="An update is available."/>
+            </DockPanel>
+        </Border>
+        <ContentControl x:Name="ViewHost"/>
+    </DockPanel>
+</Window>

@@ -1,0 +1,24 @@
+<UserControl x:Class="AdbBridge.App.Views.SelectionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="440">
+            <TextBlock Text="AdbBridge" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+            <TextBlock Text="What is this PC?" FontSize="14" Foreground="#666" Margin="0,4,0,28" HorizontalAlignment="Center"/>
+
+            <Button x:Name="HostButton" Padding="16" Margin="0,0,0,14" Click="HostButton_Click" HorizontalContentAlignment="Stretch">
+                <StackPanel>
+                    <TextBlock Text="Host" FontWeight="Bold" FontSize="16"/>
+                    <TextBlock Text="This PC — the phone is plugged into it over USB." TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="CompanionButton" Padding="16" Click="CompanionButton_Click" HorizontalContentAlignment="Stretch">
+                <StackPanel>
+                    <TextBlock Text="Companion" FontWeight="Bold" FontSize="16"/>
+                    <TextBlock Text="This PC — Android Studio runs here and needs to see the phone." TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Button>
+        </StackPanel>
+    </Grid>
+</UserControl>

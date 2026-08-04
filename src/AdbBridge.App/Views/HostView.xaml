@@ -1,0 +1,130 @@
+<UserControl x:Class="AdbBridge.App.Views.HostView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style TargetType="TextBlock" x:Key="LabelStyle">
+            <Setter Property="Margin" Value="0,0,0,2"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+        <Style TargetType="PasswordBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="120"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <Button x:Name="BackButton" Content="‹ Back" Padding="10,4" Click="BackButton_Click" DockPanel.Dock="Left"/>
+            <TextBlock Text="Host — Local PC" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" Margin="10,0,0,0"/>
+        </DockPanel>
+
+        <TextBlock Grid.Row="1" Text="Phone stays plugged in here. This exposes your local adb server over a tunnel."
+                   TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"/>
+
+        <!-- Config -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="adb.exe path (platform-tools)" Style="{StaticResource LabelStyle}"/>
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="AdbPathBox" Grid.Column="0" Margin="0"/>
+                <Button x:Name="BrowseAdbButton" Grid.Column="1" Content="Browse…" Margin="6,0,0,10" Padding="10,4" Click="BrowseAdbButton_Click"/>
+            </Grid>
+
+            <TextBlock Text="Tunnel provider" Style="{StaticResource LabelStyle}"/>
+            <ComboBox x:Name="ProviderCombo" Margin="0,0,0,10" SelectionChanged="ProviderCombo_SelectionChanged">
+                <ComboBoxItem Content="ngrok" Tag="Ngrok"/>
+                <ComboBoxItem Content="Pinggy" Tag="Pinggy"/>
+            </ComboBox>
+
+            <StackPanel x:Name="NgrokPanel">
+                <TextBlock Text="ngrok.exe path" Style="{StaticResource LabelStyle}"/>
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="NgrokPathBox" Grid.Column="0" Margin="0"/>
+                    <Button x:Name="BrowseNgrokButton" Grid.Column="1" Content="Browse…" Margin="6,0,0,10" Padding="10,4" Click="BrowseNgrokButton_Click"/>
+                </Grid>
+
+                <TextBlock Text="ngrok authtoken" Style="{StaticResource LabelStyle}"/>
+                <PasswordBox x:Name="AuthTokenBox"/>
+            </StackPanel>
+
+            <StackPanel x:Name="PinggyPanel" Visibility="Collapsed">
+                <TextBlock Text="ssh.exe path (Windows OpenSSH client)" Style="{StaticResource LabelStyle}"/>
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="SshPathBox" Grid.Column="0" Margin="0"/>
+                    <Button x:Name="BrowseSshButton" Grid.Column="1" Content="Browse…" Margin="6,0,0,10" Padding="10,4" Click="BrowseSshButton_Click"/>
+                </Grid>
+
+                <TextBlock Text="Pinggy token (Pro token gives a persistent address)" Style="{StaticResource LabelStyle}"/>
+                <PasswordBox x:Name="PinggyTokenBox"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Start/Stop -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button x:Name="StartStopButton" Content="Start Sharing" Padding="18,8" FontWeight="Bold" Click="StartStopButton_Click"/>
+            <CheckBox x:Name="RunAtStartupCheck" Content="Run at Windows startup" VerticalAlignment="Center" Margin="20,0,0,0" Checked="RunAtStartupCheck_Changed" Unchecked="RunAtStartupCheck_Changed"/>
+        </StackPanel>
+
+        <!-- Status -->
+        <Border Grid.Row="4" BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,0,12" Background="#FAFAFA">
+            <StackPanel>
+                <TextBlock x:Name="AdbStatusText" Text="ADB server: stopped"/>
+                <TextBlock x:Name="TunnelStatusText" Text="Tunnel: stopped" Margin="0,4,0,0"/>
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="PublicAddressBox" Grid.Column="0" IsReadOnly="True" FontFamily="Consolas"
+                             FontSize="16" Padding="6" Text="(not connected)" Margin="0"/>
+                    <Button x:Name="CopyAddressButton" Grid.Column="1" Content="Copy" Padding="12,4" Margin="6,0,0,0" Click="CopyAddressButton_Click"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <TextBlock Grid.Row="5" Text="Devices seen locally" Style="{StaticResource LabelStyle}"/>
+
+        <ListView x:Name="DeviceListView" Grid.Row="6" Margin="0,0,0,12">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Serial" Width="180" DisplayMemberBinding="{Binding Serial}"/>
+                    <GridViewColumn Header="State" Width="100" DisplayMemberBinding="{Binding State}"/>
+                    <GridViewColumn Header="Model" Width="200" DisplayMemberBinding="{Binding Model}"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <TextBlock Grid.Row="7" Text="Log" Style="{StaticResource LabelStyle}" Margin="0,0,0,4"/>
+        <ListBox x:Name="LogListBox" Grid.Row="7" Margin="0,20,0,0" FontFamily="Consolas" FontSize="11"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+
+        <TextBlock Grid.Row="8" Text="Give the address above to the Companion side on your Cloud PC." Foreground="#666" Margin="0,10,0,0"/>
+    </Grid>
+</UserControl>

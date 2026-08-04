@@ -1,0 +1,89 @@
+<UserControl x:Class="AdbBridge.App.Views.CompanionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style TargetType="TextBlock" x:Key="LabelStyle">
+            <Setter Property="Margin" Value="0,0,0,2"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="120"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <Button x:Name="BackButton" Content="‹ Back" Padding="10,4" Click="BackButton_Click" DockPanel.Dock="Left"/>
+            <TextBlock Text="Companion — Cloud PC" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" Margin="10,0,0,0"/>
+        </DockPanel>
+
+        <TextBlock Grid.Row="1" Text="Paste the address shown on the Host side, then Connect. Leave this running before you open Android Studio."
+                   TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"/>
+
+        <!-- Config -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="adb.exe path (the one Android Studio uses)" Style="{StaticResource LabelStyle}"/>
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="AdbPathBox" Grid.Column="0" Margin="0"/>
+                <Button x:Name="BrowseAdbButton" Grid.Column="1" Content="Browse…" Margin="6,0,0,10" Padding="10,4" Click="BrowseAdbButton_Click"/>
+            </Grid>
+
+            <TextBlock Text="Host tunnel address (host:port)" Style="{StaticResource LabelStyle}"/>
+            <TextBox x:Name="AddressBox" FontFamily="Consolas"/>
+        </StackPanel>
+
+        <!-- Connect -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button x:Name="ConnectButton" Content="Connect" Padding="18,8" FontWeight="Bold" Click="ConnectButton_Click"/>
+            <CheckBox x:Name="RunAtStartupCheck" Content="Run at Windows startup" VerticalAlignment="Center" Margin="20,0,0,0" Checked="RunAtStartupCheck_Changed" Unchecked="RunAtStartupCheck_Changed"/>
+            <CheckBox x:Name="AutoConnectCheck" Content="Auto-connect on startup" VerticalAlignment="Center" Margin="16,0,0,0" Checked="AutoConnectCheck_Changed" Unchecked="AutoConnectCheck_Changed"/>
+        </StackPanel>
+
+        <!-- Status -->
+        <Border Grid.Row="4" BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,0,12" Background="#FAFAFA">
+            <StackPanel>
+                <TextBlock x:Name="HostConnectionText" Text="Host: not connected" FontWeight="Bold" FontSize="13"/>
+                <TextBlock x:Name="PhoneStatusText" Text="Phone: unknown" FontWeight="Bold" FontSize="13" Margin="0,4,0,0"/>
+                <Separator Margin="0,8,0,8"/>
+                <TextBlock x:Name="RelayStatusText" Text="Relay: stopped" Foreground="#666"/>
+                <TextBlock x:Name="WatchdogStatusText" Text="Watchdog: stopped" Foreground="#666" Margin="0,4,0,0"/>
+                <TextBlock x:Name="LastConnectionText" Text="Last proxied connection: never" Foreground="#666" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <TextBlock Grid.Row="5" Text="Devices seen through the relay" Style="{StaticResource LabelStyle}"/>
+
+        <ListView x:Name="DeviceListView" Grid.Row="6" Margin="0,0,0,12">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Serial" Width="180" DisplayMemberBinding="{Binding Serial}"/>
+                    <GridViewColumn Header="State" Width="100" DisplayMemberBinding="{Binding State}"/>
+                    <GridViewColumn Header="Model" Width="200" DisplayMemberBinding="{Binding Model}"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <TextBlock Grid.Row="7" Text="Log" Style="{StaticResource LabelStyle}" Margin="0,0,0,4"/>
+        <ListBox x:Name="LogListBox" Grid.Row="7" Margin="0,20,0,0" FontFamily="Consolas" FontSize="11"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+
+        <TextBlock Grid.Row="8" Text="Once Phone shows 'forwarded' above, open Android Studio — it should detect it automatically." Foreground="#666" Margin="0,10,0,0"/>
+    </Grid>
+</UserControl>
