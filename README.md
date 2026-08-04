@@ -1,43 +1,26 @@
 # AdbBridge
 
+## About
+
 A single Windows app that lets Android Studio, running on a Cloud PC with no USB
-access, see a phone plugged into a separate Local PC — automatically, and without the
-manual `netsh portproxy` / adb-wrapper dance.
+access, see a phone plugged into a separate Local PC.
 
 One `AdbBridge.exe`, copied to both machines. On launch it asks what this PC is:
 
 - **Host** — the PC with the phone plugged into it over USB.
 - **Companion** — the PC Android Studio runs on.
 
-On startup it checks GitHub Releases for a newer version and shows a dismissible banner
-with a link if one exists — it only reads the latest release's tag, never downloads or
-replaces anything automatically.
-
-Each role is its own screen with a **‹ Back** button to return to that choice (which
-tears down whatever was running — relay, tunnel, adb server — first).
-
-## Why this works when manual netsh/wrapper tricks didn't
-
-Android Studio's bundled `adb.exe` does its own `start-server` handshake against
-`127.0.0.1:5037` on startup. If nothing valid answers there, it kills whatever's there
-and spawns its own local server — which is why `netsh portproxy` rules and fake
-`adb.exe` wrappers kept getting stomped.
-
-The Companion screen instead runs a small, real TCP listener that **owns**
-`127.0.0.1:5037` and transparently forwards every byte to your Local PC's real adb
-server through a tunnel (ngrok or Pinggy — pick either on the Host screen). Because it's
-a genuine listener speaking real ADB protocol bytes (not a proxy rule or a fake binary),
-any adb client — including Android Studio's — completes its handshake against it
-successfully and just uses it instead of starting a competing server. A background
-watchdog (`PortGuardService`) reclaims the port within seconds if anything ever takes it
-away (e.g. after `adb kill-server`).
-
-The Companion screen also continuously shows two independent, auto-updating facts,
-derived from real proxied connection attempts (not just "is something listening"):
+The Companion screen continuously shows two independent, auto-updating facts:
 - **Host: connected / unreachable / checking…** — is the tunnel actually reaching the
   Host's real adb server right now.
 - **Phone: forwarded / not detected / present but not ready** — is a device actually
   showing up through that connection, and in what state.
+
+Tokens are encrypted at rest with Windows DPAPI and never passed as plain command-line
+arguments to ngrok/ssh, and Pinggy's SSH host key is pinned via a real known_hosts file
+instead of disabling verification. On startup the app checks GitHub Releases for a newer
+version and shows a dismissible banner with a link if one exists — it only reads the
+latest release's tag, never downloads or replaces anything automatically.
 
 ## Prerequisites
 
@@ -71,9 +54,16 @@ dotnet publish src/AdbBridge.App/AdbBridge.App.csproj -c Release -r win-x64 --se
 
 The published `AdbBridge.exe` lands under
 `src/AdbBridge.App/bin/Release/net8.0-windows/win-x64/publish/` — copy that one file to
-both the Local PC and the Cloud PC.
+both the Local PC and the Cloud PC. Prebuilt releases are also available under
+[Releases](../../releases).
 
 ## Usage
+
+Launch `AdbBridge.exe` on both machines. Pick **Host** on the Local PC (phone attached)
+and **Companion** on the Cloud PC (Android Studio). Configure each once — settings are
+saved for next time — then leave both running (minimize to tray) for the session.
+
+## How to Use
 
 1. Launch `AdbBridge.exe` on both machines. Pick **Host** on the Local PC (phone
    attached) and **Companion** on the Cloud PC (Android Studio).
@@ -92,8 +82,7 @@ both the Local PC and the Cloud PC.
 4. Watch the status panel: wait for **Host: connected** and **Phone: forwarded —
    `<model>`**. That confirms the relay + tunnel are working end-to-end before you
    even touch Android Studio.
-5. Open Android Studio — it should detect the device automatically, with no manual
-   `netsh`/wrapper steps.
+5. Open Android Studio — it should detect the device automatically.
 
 Leave the app running (minimize to tray) on both machines for the rest of the session.
 With ngrok free plan or a Pinggy free tunnel, the address changes on every Host restart
