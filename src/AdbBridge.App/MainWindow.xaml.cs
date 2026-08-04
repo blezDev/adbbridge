@@ -4,6 +4,7 @@ using System.Windows;
 using AdbBridge.App.Views;
 using AdbBridge.Core.Update;
 using Application = System.Windows.Application;
+using MessageBox = System.Windows.MessageBox;
 
 namespace AdbBridge.App;
 
@@ -37,20 +38,34 @@ public partial class MainWindow : Window
                 break;
         }
 
-        _ = CheckForUpdatesAsync();
+        _ = CheckForUpdatesAsync(interactive: false);
     }
 
-    private async Task CheckForUpdatesAsync()
+    /// <summary>
+    /// interactive=false is the silent startup check: shows the banner if there's an
+    /// update, says nothing otherwise. interactive=true is a user-initiated "Check for
+    /// updates" click, which should always give some feedback either way — including a
+    /// small "you're up to date" confirmation when there's nothing new, since silence
+    /// would look like the button didn't do anything.
+    /// </summary>
+    private async Task CheckForUpdatesAsync(bool interactive)
     {
         var update = await UpdateChecker.CheckAsync();
-        if (update is null) return;
 
-        _availableUpdate = update;
-        Dispatcher.Invoke(() =>
+        if (update is not null)
         {
-            UpdateBannerText.Text = $"AdbBridge {update.Version} is available (you're on an older version).";
-            UpdateBanner.Visibility = Visibility.Visible;
-        });
+            _availableUpdate = update;
+            Dispatcher.Invoke(() =>
+            {
+                UpdateBannerText.Text = $"AdbBridge {update.Version} is available (you're on an older version).";
+                UpdateBanner.Visibility = Visibility.Visible;
+            });
+        }
+        else if (interactive)
+        {
+            Dispatcher.Invoke(() =>
+                MessageBox.Show(this, "You're up to date.", "AdbBridge", MessageBoxButton.OK, MessageBoxImage.Information));
+        }
     }
 
     private void UpdateDownloadButton_Click(object sender, RoutedEventArgs e)
@@ -86,6 +101,7 @@ public partial class MainWindow : Window
         var view = new SelectionView();
         view.HostChosen += ShowHost;
         view.CompanionChosen += () => ShowCompanion(autoConnect: false);
+        view.CheckUpdatesRequested += () => _ = CheckForUpdatesAsync(interactive: true);
         SetView(null, view);
         Title = "AdbBridge";
     }

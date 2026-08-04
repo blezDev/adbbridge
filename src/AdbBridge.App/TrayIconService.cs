@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Forms;
+using MessageBox = System.Windows.MessageBox;
 
 namespace AdbBridge.App;
 
@@ -12,10 +13,18 @@ public sealed class TrayIconService : IDisposable
     private readonly NotifyIcon _notifyIcon;
     private readonly Window _window;
 
-    /// <summary>Raised when the user picks Exit from the tray menu. The owner is
-    /// responsible for tearing down any live view (relay/tunnel) before actually
-    /// shutting down — this event intentionally does not call Application.Shutdown()
-    /// itself.</summary>
+    // Set right before we actually intend to exit (tray "Exit", or "No" in the close
+    // dialog). Application.Shutdown() closes the window again internally, re-firing
+    // this same Closing handler a second time — without this guard that showed the
+    // dialog twice, and since Shutdown() doesn't honor a cancelled Closing the way a
+    // normal user-initiated Close() does, every button in that second dialog just let
+    // it exit anyway. Once this is true, Closing is let through untouched.
+    private bool _isExiting;
+
+    /// <summary>Raised when the user chooses to exit (tray menu or the close dialog).
+    /// The owner is responsible for tearing down any live view (relay/tunnel) before
+    /// actually shutting down — this event intentionally does not call
+    /// Application.Shutdown() itself.</summary>
     public event Action? ExitRequested;
 
     public TrayIconService(Window window)
@@ -24,7 +33,7 @@ public sealed class TrayIconService : IDisposable
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Show", null, (_, _) => ShowWindow());
-        menu.Items.Add("Exit", null, (_, _) => ExitRequested?.Invoke());
+        menu.Items.Add("Exit", null, (_, _) => RequestExit());
 
         _notifyIcon = new NotifyIcon
         {
@@ -50,10 +59,39 @@ public sealed class TrayIconService : IDisposable
 
         _window.Closing += (_, e) =>
         {
+            if (_isExiting) return; // already decided to exit — let this Close proceed
+
+            // Always intercept the close button — ask what the user actually wants
+            // instead of silently picking one. A tunnel/relay can be actively running,
+            // so "just close" losing that silently would be surprising.
             e.Cancel = true;
-            _window.Hide();
-            _notifyIcon.Visible = true;
+
+            var result = MessageBox.Show(
+                _window,
+                "Minimize AdbBridge to the system tray and keep it running (Yes), " +
+                "or close it completely (No)?",
+                "AdbBridge",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            switch (result)
+            {
+                case MessageBoxResult.Yes:
+                    _window.Hide();
+                    _notifyIcon.Visible = true;
+                    break;
+                case MessageBoxResult.No:
+                    RequestExit();
+                    break;
+                // Cancel (or closing the dialog itself): do nothing, window stays open.
+            }
         };
+    }
+
+    private void RequestExit()
+    {
+        _isExiting = true;
+        ExitRequested?.Invoke();
     }
 
     private void ShowWindow()

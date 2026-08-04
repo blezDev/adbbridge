@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -56,6 +57,8 @@ public partial class HostView : UserControl, IBridgeView
 
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _statusTimer.Tick += (_, _) => RefreshStatusText();
+
+        Loaded += (_, _) => CheckNgrokAvailability();
     }
 
     public void Cleanup() => _ = StopSharingAsync();
@@ -223,7 +226,11 @@ public partial class HostView : UserControl, IBridgeView
             SshPathBox.Text = dialog.FileName;
     }
 
-    private void ProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateProviderPanels();
+    private void ProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateProviderPanels();
+        CheckNgrokAvailability();
+    }
 
     private void UpdateProviderPanels()
     {
@@ -231,6 +238,34 @@ public partial class HostView : UserControl, IBridgeView
         var isPinggy = (ProviderCombo.SelectedItem as ComboBoxItem)?.Tag as string == "Pinggy";
         NgrokPanel.Visibility = isPinggy ? Visibility.Collapsed : Visibility.Visible;
         PinggyPanel.Visibility = isPinggy ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// ngrok isn't bundled or auto-installable — it's a separate closed-source binary
+    /// from ngrok.com (unlike Pinggy, which only needs Windows' own OpenSSH client).
+    /// Whenever ngrok is the selected provider and no valid ngrok.exe is configured,
+    /// proactively offers to open the download page instead of waiting for Start
+    /// Sharing to fail with a plain "not found" error.
+    /// </summary>
+    private void CheckNgrokAvailability()
+    {
+        var isNgrok = (ProviderCombo.SelectedItem as ComboBoxItem)?.Tag as string != "Pinggy";
+        if (!isNgrok) return;
+
+        var path = NgrokPathBox.Text.Trim();
+        if (path.Length > 0 && File.Exists(path)) return;
+
+        var owner = Window.GetWindow(this);
+        var result = MessageBox.Show(owner,
+            "ngrok.exe wasn't found. AdbBridge doesn't bundle ngrok — it's a separate free " +
+            "download from ngrok.com.\n\nOpen the ngrok download page now?",
+            "ngrok required", MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            try { Process.Start(new ProcessStartInfo("https://ngrok.com/download") { UseShellExecute = true }); }
+            catch { /* best effort — nothing more useful to do if the browser won't launch */ }
+        }
     }
 
     private void RunAtStartupCheck_Changed(object sender, RoutedEventArgs e)

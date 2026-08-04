@@ -19,6 +19,13 @@
                     <TextBlock Text="This PC — Android Studio runs here and needs to see the phone." TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0"/>
                 </StackPanel>
             </Button>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,24,0,0">
+                <TextBlock x:Name="VersionText" Text="AdbBridge" Foreground="#999" VerticalAlignment="Center"/>
+                <TextBlock Text=" · " Foreground="#999" VerticalAlignment="Center"/>
+                <Button x:Name="CheckUpdatesButton" Content="Check for updates" Padding="0" BorderThickness="0"
+                        Background="Transparent" Foreground="#2563EB" Cursor="Hand" Click="CheckUpdatesButton_Click"/>
+            </StackPanel>
         </StackPanel>
     </Grid>
 </UserControl>
