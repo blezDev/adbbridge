@@ -402,4 +402,24 @@ all — nothing left to fix in the relay for this specific symptom.
   opening and working in Studio's UI (the Transport-layer forward they depend on is
   confirmed working at the relay level, but nobody has clicked through the actual Studio
   panels yet).
-end-to-end signal, not just the relay-level pairing succeeding).
+
+## Layout Inspector confirmed working; reverse pool re-confirmed under real retry load (2026-08-23, Host PC)
+
+Retested with the pool-fix build freshly rebuilt on Host. Two things confirmed:
+
+- **Layout Inspector opens and works in Studio's UI.** Closes the last open item above —
+  forward tunneling (`ForwardBroker`/`ForwardPortRelay`) is verified end-to-end at the
+  actual feature level now, not just at the relay/wire level.
+- **Reverse pool held up under real retry churn.** Studio auto-retried Device Mirroring 4
+  times in this one session (4 separate `reverse:forward:` registrations, ports 53035,
+  53088, 53123, 53159), each producing 3 pooled connections and 3 successful pairings —
+  **12/12 paired, zero timeouts.** The fix isn't just a one-off pass, it holds under
+  repeated real-world reconnect load.
+- **Device Mirroring still fails**, consistent with the hardware-encoder diagnosis above —
+  not re-investigated further since that's already understood to be device-side, not a
+  relay bug. Not yet confirmed via a direct-USB control test (would fully rule out any
+  residual relay involvement, but isn't expected to change the conclusion).
+
+**Still open:** Network Inspector and Database Inspector haven't been clicked through in
+Studio's UI yet — same forward-tunnel mechanism as Layout Inspector, so likely fine, but
+unverified.
