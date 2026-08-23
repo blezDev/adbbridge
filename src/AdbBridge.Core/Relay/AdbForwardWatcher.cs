@@ -25,7 +25,7 @@ public sealed class AdbForwardWatcher
 
     private enum RequestState { AwaitingLength, AwaitingBody, Done }
     private enum ResponseState { Idle, AwaitingStatus, AwaitingResolvedLength, AwaitingResolvedBody, Done }
-    private enum ForwardKind { None, Install, Remove, RemoveAll }
+    private enum ForwardKind { None, Install, Remove, RemoveAll, ReverseInstall, ReverseRemove, ReverseRemoveAll }
 
     private readonly object _gate = new();
 
@@ -40,10 +40,24 @@ public sealed class AdbForwardWatcher
 
     private ForwardKind _kind = ForwardKind.None;
     private int _port = -1; // -1 = unknown, 0 = "resolve from response", >0 = known local port
+    private string? _reverseRemoteSpec;
 
     public event EventHandler<int>? ForwardEstablished;
     public event EventHandler<int>? ForwardRemoved;
     public event EventHandler? ForwardsCleared;
+
+    /// <summary>
+    /// adb reverse is the mirror image of adb forward: instead of a new Host-side port
+    /// the Companion needs to tunnel a listener for, the CLIENT (Studio) opens the local
+    /// listener itself and asks the real adb server to deliver device-originated
+    /// connections to it. See <see cref="ReversePoolRelay"/> for why that needs a pooled
+    /// tunnel rather than a plain listener. RemoteSpec is the device-side half (e.g.
+    /// "localabstract:screen-sharing-agent-51553") — adb's killforward for reverse
+    /// mappings identifies the mapping by this, not by the local port.
+    /// </summary>
+    public event EventHandler<(string RemoteSpec, int LocalPort)>? ReverseForwardEstablished;
+    public event EventHandler<string>? ReverseForwardRemoved;
+    public event EventHandler? ReverseForwardsCleared;
 
     /// <summary>Diagnostic: fires for every adb service string this connection requests
     /// (both the transport-select and, when present, the per-device service that follows
@@ -121,6 +135,12 @@ public sealed class AdbForwardWatcher
 
     private void ClassifyService(string service)
     {
+        if (TryClassifyReverse(service))
+        {
+            _respState = ResponseState.AwaitingStatus;
+            return;
+        }
+
         if (!service.StartsWith("host", StringComparison.Ordinal))
             return;
 
@@ -161,6 +181,55 @@ public sealed class AdbForwardWatcher
         }
 
         _respState = ResponseState.AwaitingStatus;
+    }
+
+    /// <summary>
+    /// adb reverse requests are per-device (sent after a transport-select, like shell:/
+    /// sync:), never "host"-prefixed, so this is checked before the host: family above.
+    /// killforward for a reverse mapping names the device-side remote spec, not a port —
+    /// there's no local port to parse out of it at all.
+    /// </summary>
+    private bool TryClassifyReverse(string service)
+    {
+        const string killAllMarker = "reverse:killforward-all";
+        const string killMarker = "reverse:killforward:";
+        const string fwdMarker = "reverse:forward:";
+
+        if (service.Equals(killAllMarker, StringComparison.Ordinal))
+        {
+            _kind = ForwardKind.ReverseRemoveAll;
+            return true;
+        }
+
+        if (service.StartsWith(killMarker, StringComparison.Ordinal))
+        {
+            _kind = ForwardKind.ReverseRemove;
+            _reverseRemoteSpec = service[killMarker.Length..];
+            return true;
+        }
+
+        if (service.StartsWith(fwdMarker, StringComparison.Ordinal))
+        {
+            var rest = service[fwdMarker.Length..];
+            if (rest.StartsWith("norebind:", StringComparison.Ordinal))
+                rest = rest["norebind:".Length..];
+
+            var semi = rest.IndexOf(';');
+            if (semi < 0) return false;
+
+            var remoteSpec = rest[..semi];
+            var localSpec = rest[(semi + 1)..];
+            // Unlike host:forward:, Studio already owns the local listener before asking
+            // for the reverse mapping, so it always specifies an explicit, non-zero port.
+            if (!TryParseTcpPort(localSpec, out var port) || port <= 0) return false;
+
+            _kind = ForwardKind.ReverseInstall;
+            _reverseRemoteSpec = remoteSpec;
+            _port = port;
+            return true;
+        }
+
+        return false;
     }
 
     private void AppendResponse(ReadOnlySpan<byte> data)
@@ -237,6 +306,15 @@ public sealed class AdbForwardWatcher
                 break;
             case ForwardKind.RemoveAll:
                 ForwardsCleared?.Invoke(this, EventArgs.Empty);
+                break;
+            case ForwardKind.ReverseInstall when _port > 0 && _reverseRemoteSpec is not null:
+                ReverseForwardEstablished?.Invoke(this, (_reverseRemoteSpec, _port));
+                break;
+            case ForwardKind.ReverseRemove when _reverseRemoteSpec is not null:
+                ReverseForwardRemoved?.Invoke(this, _reverseRemoteSpec);
+                break;
+            case ForwardKind.ReverseRemoveAll:
+                ReverseForwardsCleared?.Invoke(this, EventArgs.Empty);
                 break;
         }
     }

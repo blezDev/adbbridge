@@ -45,6 +45,12 @@ public sealed class TcpRelay : IAsyncDisposable
     public event EventHandler<int>? ForwardRemoved;
     public event EventHandler? ForwardsCleared;
 
+    /// <summary>See <see cref="AdbForwardWatcher.ReverseForwardEstablished"/> — consumed
+    /// by <see cref="ReversePoolRelay"/>.</summary>
+    public event EventHandler<(string RemoteSpec, int LocalPort)>? ReverseForwardEstablished;
+    public event EventHandler<string>? ReverseForwardRemoved;
+    public event EventHandler? ReverseForwardsCleared;
+
     public TcpRelay(AdbProcessManager adbProcessManager, int localPort = 5037)
     {
         _adbProcessManager = adbProcessManager;
@@ -154,6 +160,9 @@ public sealed class TcpRelay : IAsyncDisposable
             watcher.ForwardEstablished += (_, port) => ForwardEstablished?.Invoke(this, port);
             watcher.ForwardRemoved += (_, port) => ForwardRemoved?.Invoke(this, port);
             watcher.ForwardsCleared += (_, _) => ForwardsCleared?.Invoke(this, EventArgs.Empty);
+            watcher.ReverseForwardEstablished += (_, e) => ReverseForwardEstablished?.Invoke(this, e);
+            watcher.ReverseForwardRemoved += (_, remoteSpec) => ReverseForwardRemoved?.Invoke(this, remoteSpec);
+            watcher.ReverseForwardsCleared += (_, _) => ReverseForwardsCleared?.Invoke(this, EventArgs.Empty);
             watcher.ServiceObserved += (_, service) => Log($"adb service request: {service}");
 
             if (prebuffered.Length > 0)

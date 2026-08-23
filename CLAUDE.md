@@ -96,7 +96,83 @@ Studio's Device Mirroring. Findings, cheapest-to-verify first:
   ended** — check `companion.log` for a `localabstract:screen-sharing-agent-` line to
   settle it.
 - Measured round-trip latency through the Pinggy tunnel for a single `host:version`
-  request: **~760ms.** If the agent turns out to be multiplexed (not a separate forward),
-  the likely explanation is that its on-device wait-for-connection timeout is too short to
-  survive several serialized ~760ms round-trips — a latency ceiling, not a bug, and not
-  obviously fixable by more relay code.
+  request: **~760ms.**
+
+## Root cause found: Device Mirroring uses `adb reverse`, not `adb forward` (2026-08-23, later still)
+
+The multiplex theory above was wrong. With `ServiceObserved` logging every request,
+`companion.log` caught the actual sequence:
+
+```
+reverse:forward:localabstract:screen-sharing-agent-51553;tcp:51553
+shell,v2:CLASSPATH=/data/local/tmp/.studio/screen-sharing-agent.jar app_process ... --socket=screen-sharing-agent-51553 --flags=32
+...
+reverse:killforward:localabstract:screen-sharing-agent-51553   (~11s later, after the agent gave up)
+```
+
+**`adb reverse` is the mirror image of `adb forward`, and structurally incompatible with
+a two-machine bridge the same way `adb forward` originally was — but harder to fix.**
+`reverse:forward:<remote>;<local>` tells the adb server "when the device connects to its
+own `<remote>` (here, `localabstract:screen-sharing-agent-51553`), tunnel that back to
+`<local>` (`tcp:51553`) **on this machine**" — where "this machine" means whichever one
+runs the *real* adb server. Studio (on Companion) opens its receiving listener on
+`127.0.0.1:51553` on Companion, but the real adb server that processes the command is on
+Host. When the device later connects, Host's real adb server dials `127.0.0.1:51553` on
+**Host**, finds nothing (Studio's listener is on the other machine entirely), and the
+agent times out waiting for a connection that can never arrive.
+
+Unlike `adb forward`, there's no listener to wrap here — the real adb server is the one
+*dialing out*, and that can't be intercepted directly. The fix is a pooled reverse
+tunnel, implemented in this commit:
+
+- **`ForwardBroker.cs` (Host)** — extended with a second marker, `"REV:<port>\n"`
+  (disambiguated from `"FWD:<port>\n"` and real adb traffic the same zero-lookahead way:
+  peek one byte, real adb frames never start with uppercase). On seeing `REV:<port>`, it
+  binds a stand-in `TcpListener` on `127.0.0.1:<port>` itself (idempotent — one per port)
+  and parks the tunnel connection in a `Channel<TcpClient>` pool keyed by port. When the
+  real adb server actually dials that port (delivering a genuine device-originated
+  reverse-connect), the accept loop dequeues one pooled connection, writes `"GO\n"` into
+  it, and bridges bytes between the two.
+- **`ReversePoolRelay.cs` (Companion, new file)** — watches `TcpRelay` for two new events
+  (`ReverseForwardEstablished`/`ReverseForwardRemoved`/`ReverseForwardsCleared`, added to
+  both `AdbForwardWatcher` and `TcpRelay`, mirroring the existing forward ones but keyed
+  by the device-side remote spec for removal, since `reverse:killforward:<remote>` names
+  the remote, not the port). For each registered reverse mapping it keeps
+  `PoolSizePerPort = 2` tunnel connections open on the Host at all times: each one opens
+  a raw connection through the tunnel, sends `"REV:<port>\n"`, then blocks waiting to
+  read exactly `"GO\n"`. Only once that arrives does it dial `127.0.0.1:<port>` on
+  Companion (Studio's real listener) and start bridging — so Studio never sees a
+  connection attempt that isn't backed by a real device-originated one. Each slot
+  replenishes itself in a loop after being consumed or dying.
+- `AdbForwardWatcher.ClassifyService` now also recognizes `reverse:forward:`/
+  `reverse:killforward:`/`reverse:killforward-all` — these are per-device requests (sent
+  after a `host:transport:<serial>` select, like `shell:`/`sync:`), never `host:`-prefixed,
+  so they're checked before the existing host: family and don't interfere with it.
+
+**Not yet verified — this is exactly where you're picking this up:**
+- Whether the pooled reverse tunnel actually works end-to-end. Companion has this build
+  running now (companion machine, this session) but **Host does not yet** — the whole
+  point of this handoff is to get it built and running there.
+- Whether `PoolSizePerPort = 2` is enough (Device Mirroring likely only needs one at a
+  time, but concurrent inspector features might want more) and whether
+  `ReversePairTimeout = 5s` in `ForwardBroker` is long enough given the ~760ms tunnel
+  round-trip for the pool to even have a connection ready.
+- General robustness under Studio's real reconnect churn (repeated
+  `reverse:forward`/`killforward` cycles as mirroring is retried).
+
+**To pick this up on the Host PC:**
+1. `git pull`, `dotnet build AdbBridge.sln -c Debug` (or Release).
+2. Run `AdbBridge.exe host` here (phone attached), start sharing as usual.
+3. On the Companion PC, reconnect (this build is already running there as of this
+   commit). Trigger Device Mirroring in Studio.
+4. Watch `host.log` (`%LOCALAPPDATA%\AdbBridge\logs\host.log`) for `Reverse-tunnel
+   stand-in listener bound on 127.0.0.1:<port>...` and `Reverse relay for port <port>
+   failed: ...` / silence (success) lines. Watch `companion.log` for `Pooling
+   reverse-tunnel connections for 127.0.0.1:<port>...`. Correlate both against
+   `idea.log`'s `Executing adb shell ... screen-sharing-agent-<N>` / `ScreenSharingAgent
+   ... terminated` timing.
+5. If it still fails, the first thing to check is whether `PairReverseConnectionAsync`
+   in `ForwardBroker.cs` ever finds a pooled connection at all (its timeout log line) —
+   if the pool is empty when the real adb server dials in, either the pool isn't being
+   replenished fast enough or `ReversePoolRelay` never started it (check for `Pooling
+   reverse-tunnel connections...` in `companion.log` in the first place).
