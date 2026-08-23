@@ -222,3 +222,53 @@ this run) and for any `REV:` or connection-refused/failure lines in the same 17:
 window (IST, matches `host.log` timestamps — confirm Companion's clock offset if any).
 If there's no `Pooling` line at all for those ports, the bug is on the detection/event
 side in `ReversePoolRelay`/`TcpRelay`, not the pairing timeout math.
+
+## Companion-side follow-up (2026-08-23, same day, later)
+
+Checked `companion.log` for exactly those two ports (61494, 61555) — `Pooling
+reverse-tunnel connections for 127.0.0.1:<port>...` DID fire for both, immediately after
+each `reverse:forward:` request, and there are **no** failure/error lines anywhere near
+them (grepped `failed|error|Reverse-tunnel|nothing.*listening` across the whole file —
+nothing). So detection isn't the bug: `ReversePoolRelay` definitely started a pool for
+both ports. But that leaves a real mystery — if `RunSlotAsync` successfully connects,
+sends `"REV:<port>\n"`, and *doesn't* log any failure, it should be sitting in
+`WaitForGoAsync`. And on the Host side, if `EnsureReverseListener` logged "bound" (which
+only happens inside `HandleReverseMarkerAsync`, i.e. only after a REV-tagged connection
+was already parsed), the very next lines in that same method are just a dictionary
+lookup/create and `channel.Writer.WriteAsync(inbound, ct)` — nothing between them that
+should plausibly fail or delay. A `Channel<T>` reader is supposed to find a write
+regardless of which happens first, so a 5s timeout doesn't have an obvious explanation
+from re-reading the code alone.
+
+Rather than keep guessing, added explicit instrumentation to pin down exactly which step
+is failing next time (this build is what's running on Companion now):
+- `ForwardBroker.cs`: logs when a Companion connection's item is actually written to the
+  channel (`"Reverse-tunnel connection from Companion queued for port {port}."`), when
+  the real adb server connects to the stand-in listener
+  (`"Real adb server connected to the reverse stand-in listener on port {port}..."`), and
+  when a pairing actually succeeds (`"...paired with a pooled tunnel connection."`).
+- `ReversePoolRelay.cs`: logs once a pooled connection's marker write completes and it
+  starts waiting (`"...pooled connection reached the Host, waiting for GO."`) and once it
+  receives GO (`"...received GO, dialing the local app."`).
+
+**To pick this up on the Host PC:** `git pull`, rebuild, relaunch Host (Companion is
+already running this build). Retry Device Mirroring, then read `host.log` in order and
+check exactly which of these four new lines appear and which don't, for the same port
+number both sides will report — that sequencing will localize the bug precisely instead
+of guessing further:
+1. Companion: `pooled connection reached the Host, waiting for GO` (proves the marker
+   write reached Host and WaitForGoAsync started)
+2. Host: `Reverse-tunnel connection from Companion queued for port <port>` (proves the
+   channel write on Host's side completed)
+3. Host: `Real adb server connected to the reverse stand-in listener on port <port>`
+   (proves the actual device-originated connection arrived)
+4. Host: `paired with a pooled tunnel connection` / Companion: `received GO, dialing the
+   local app` (proves the handoff worked)
+
+If (1) happens but (2) never does, the bug is somewhere in `HandleReverseMarkerAsync`
+between the marker parse and the channel write (a silent exception the outer catch in
+`HandleClientAsync` should also have logged as `Broker connection error: ...` — check for
+that too). If (2) happens before (3), the connection was queued in time and the timeout
+is genuinely unexplained by ordering — worth checking whether `port` in step 2's log
+matches exactly what step 3 reports, in case of a subtle port-number mismatch between the
+two sides.

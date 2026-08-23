@@ -154,6 +154,7 @@ public sealed class ReversePoolRelay : IAsyncDisposable
 
                     var marker = Encoding.ASCII.GetBytes($"REV:{_port}\n");
                     await stream.WriteAsync(marker, ct);
+                    Log($"Reverse-tunnel port {_port}: pooled connection reached the Host, waiting for GO.");
 
                     // Sits here — potentially for a long time — until the Host pairs this
                     // connection with a genuine device-originated reverse-connect.
@@ -161,6 +162,7 @@ public sealed class ReversePoolRelay : IAsyncDisposable
                     {
                         continue; // dead before pairing, or pool torn down — retry a fresh slot
                     }
+                    Log($"Reverse-tunnel port {_port}: received GO, dialing the local app.");
 
                     using var local = new TcpClient();
                     try

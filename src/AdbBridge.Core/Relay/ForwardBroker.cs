@@ -176,6 +176,7 @@ public sealed class ForwardBroker : IAsyncDisposable
         }
 
         await channel.Writer.WriteAsync(inbound, ct);
+        Log($"Reverse-tunnel connection from Companion queued for port {port}.");
     }
 
     private void EnsureReverseListener(int port)
@@ -187,7 +188,8 @@ public sealed class ForwardBroker : IAsyncDisposable
             var listener = new TcpListener(IPAddress.Loopback, port);
             listener.Start();
             _reverseListeners[port] = listener;
-            Log($"Reverse-tunnel stand-in listener bound on 127.0.0.1:{port} for adb reverse.");
+            Log($"Reverse-tunnel stand-in listener bound on 127.0.0.1:{port} for adb reverse " +
+                $"(triggered by Companion's pool connection, before any pooled item is queued).");
             _ = ReverseAcceptLoopAsync(port, listener);
         }
     }
@@ -211,6 +213,8 @@ public sealed class ForwardBroker : IAsyncDisposable
     private async Task PairReverseConnectionAsync(int port, TcpClient real, CancellationToken ct)
     {
         using var _ = real;
+        Log($"Real adb server connected to the reverse stand-in listener on port {port}; " +
+            $"waiting up to {ReversePairTimeout.TotalSeconds:0}s for a pooled tunnel connection.");
 
         Channel<TcpClient>? channel;
         lock (_reverseGate) { _reversePools.TryGetValue(port, out channel); }
@@ -227,6 +231,7 @@ public sealed class ForwardBroker : IAsyncDisposable
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             waitCts.CancelAfter(ReversePairTimeout);
             tunnelClient = await channel.Reader.ReadAsync(waitCts.Token);
+            Log($"Reverse connection on port {port} paired with a pooled tunnel connection.");
         }
         catch (OperationCanceledException)
         {
