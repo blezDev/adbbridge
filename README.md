@@ -98,22 +98,54 @@ reconnect automatically using the last address you entered, without any click.
 
 ## Device Mirroring and App Inspection
 
-Plain adb commands (`shell`, `logcat`, `install`, `push`, and even the `adb forward`
-command itself) all ride inside the single relayed connection to the adb server, so they
-worked from day one. Android Studio's **Device Mirroring**, **Layout Inspector**,
-**Network/Database Inspector**, and JDWP debugging don't: `adb forward` makes the real adb
-server (which runs on the Host, next to the USB device) open a *separate* TCP listener,
-and Studio then connects to that port **directly**, bypassing the adb server protocol
-entirely. Since only the adb server's own port was tunneled, that direct connection used
-to find nothing listening on the Companion side and the feature failed silently — even
-though `adb forward` itself reported success.
+Plain adb commands (`shell`, `logcat`, `install`, `push`, and even the `adb forward`/
+`adb reverse` commands themselves) all ride inside the single relayed connection to the
+adb server, so they worked from day one. Android Studio's **Layout Inspector**,
+**Network/Database Inspector**, **profilers**, and **Device Mirroring** don't: they need
+Studio to reach a TCP port or receive a connection *directly*, bypassing the adb server
+protocol entirely — and by default only the adb server's own port was tunneled, so those
+connections found nothing on the Companion side and the feature failed silently even
+though the underlying `forward`/`reverse` command reported success. Two separate
+mechanisms close that gap, since adb uses both:
 
-`ForwardBroker` (Host) and `ForwardPortRelay` (Companion) close that gap: the Companion
-side watches the adb protocol for `forward:`/`killforward` requests, and for each one
-opens a matching local listener that tunnels through to the real forwarded port on the
-Host. This is best-effort protocol parsing (not a supported adb API), so if a future adb
-version changes the `forward:` response framing, this degrades to the old behavior —
-`adb forward` still succeeds, but Studio's direct connection to it won't be tunneled.
+- **`adb forward`** (Layout Inspector, Network/Database Inspector, profilers) makes the
+  real adb server — which runs on the Host, next to the USB device — open a *new* TCP
+  listener, and Studio connects to that port directly. `ForwardBroker` (Host) and
+  `ForwardPortRelay` (Companion) watch the adb protocol for `forward:`/`killforward`
+  requests, and for each one open a matching local listener on Companion that tunnels
+  through to the real forwarded port on Host.
+- **`adb reverse`** (Device Mirroring's connection to its on-device
+  screen-sharing-agent) is the mirror image: the real adb server dials *out* to a port
+  on whichever machine it runs on (Host) when the device connects to its own local
+  socket — but Studio's receiving listener lives on Companion, where the command was
+  issued. There's no listener to wrap here, since the real adb server is the one
+  dialing out, so `ReversePoolRelay` (Companion) keeps a small pool of pre-opened,
+  marker-tagged tunnel connections sitting ready on the Host side at all times;
+  `ForwardBroker`'s reverse handling pairs each genuine device-originated reverse-connect
+  with one of them and signals `GO` before Companion dials Studio's real local listener —
+  so Studio never sees a connection that isn't backed by a real one.
+
+Both are best-effort protocol parsing (not a supported adb API), so a future adb version
+that changes the wire framing could degrade this back to the old behavior — the
+underlying `forward`/`reverse` command would still succeed, but Studio's direct
+connection to it wouldn't be tunneled.
+
+Separately, `TcpRelay` also intercepts `host:kill` (the wire form of `adb kill-server`)
+from the Companion's local adb client and answers it locally instead of forwarding it —
+Android Studio's own adb housekeeping issues this routinely as part of normal reconnect
+logic, and forwarding it through the tunnel would actually kill the Host's real adb
+server (and the phone's USB session) rather than a harmless local one.
+
+Both apps also write a rolling log to `%LOCALAPPDATA%\AdbBridge\logs\{host,companion}.log`
+(overwritten fresh each run) in addition to the in-app log panel, useful for diagnosing a
+connection issue after the fact.
+
+**Note:** with all of the above working, Device Mirroring's *connection* is confirmed
+tunneling correctly end-to-end — but whether the mirrored screen actually renders still
+depends on the phone's own hardware video encoder cooperating, which is outside this
+project's control. If mirroring still fails after connecting, check `adb logcat` for the
+`screensharing`/`MediaCodec` tags around the failure; a device-side codec error there
+means the same failure would likely happen over a direct USB connection too.
 
 ## Known limitations
 
