@@ -66,3 +66,37 @@ end-to-end.
    (`ForwardBroker.cs`, `HandleForwardMarkerAsync`) is still matching — it's tied to
    `adb`'s current `forward:` response framing (see the class doc comment) and could
    break on an adb version bump.
+
+## Diagnostic session on the Companion PC (2026-08-23, later same day)
+
+Live-tested against a real Host (phone attached there) over a Pinggy tunnel with Android
+Studio's Device Mirroring. Findings, cheapest-to-verify first:
+
+- **`LogSink` now also writes to a file**, since the in-memory log panel isn't inspectable
+  outside the running UI: `%LOCALAPPDATA%\AdbBridge\logs\{host,companion}.log`, fresh each
+  run. `HostView`/`CompanionView` now construct it as `new LogSink("host")` /
+  `new LogSink("companion")`. Check `host.log` on the Host PC with the same approach.
+- **The forward-tunneling fix is confirmed working end-to-end.** Classic `adb forward`
+  cases (Transport/profiler daemon, `host-serial:<serial>:forward:tcp:<N>;localabstract:
+  AndroidStudioTransport`) get caught, relayed, and Studio's `TransportProxy successfully
+  created for device` confirms real data flowed through Companion → tunnel → Host →
+  device and back.
+- **`host:kill` guard also confirmed firing** — `companion.log` shows `Blocked a host:kill
+  request...` right after Studio's own adb housekeeping tries it.
+- **Device Mirroring's screen-sharing-agent still fails** (`ScreenSharingAgent ...
+  terminated`, exit code 0, ~7-9s after start; Studio then throws `TimeoutException:
+  Device agent is not responding`). `AdbForwardWatcher` was extended to log every adb
+  service string a connection requests (`ServiceObserved` event → `TcpRelay` logs `"adb
+  service request: {service}"`) specifically to find out whether the mirroring agent's
+  connection uses a separate `forward:` (which the code already handles) or is multiplexed
+  directly over the existing `host:transport:<serial>` connection via a bare
+  `localabstract:screen-sharing-agent-<N>` follow-up request (which would need different
+  handling — there's no separate local port to tunnel; the raw byte stream would need to
+  ride the same relayed connection instead). **This was mid-investigation when the session
+  ended** — check `companion.log` for a `localabstract:screen-sharing-agent-` line to
+  settle it.
+- Measured round-trip latency through the Pinggy tunnel for a single `host:version`
+  request: **~760ms.** If the agent turns out to be multiplexed (not a separate forward),
+  the likely explanation is that its on-device wait-for-connection timeout is too short to
+  survive several serialized ~760ms round-trips — a latency ceiling, not a bug, and not
+  obviously fixable by more relay code.

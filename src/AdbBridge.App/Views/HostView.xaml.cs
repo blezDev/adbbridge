@@ -38,7 +38,7 @@ public partial class HostView : UserControl, IBridgeView
         InitializeComponent();
 
         _settings = HostSettings.Load();
-        _log = new LogSink();
+        _log = new LogSink("host");
         LogListBox.ItemsSource = _log.Lines;
         DeviceListView.ItemsSource = _devices;
 

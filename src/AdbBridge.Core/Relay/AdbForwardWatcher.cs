@@ -32,6 +32,7 @@ public sealed class AdbForwardWatcher
     private RequestState _reqState = RequestState.AwaitingLength;
     private readonly List<byte> _reqBuf = new();
     private int _reqBodyLength = -1;
+    private bool _transportSelectHandled;
 
     private ResponseState _respState = ResponseState.Idle;
     private readonly List<byte> _respBuf = new();
@@ -43,6 +44,11 @@ public sealed class AdbForwardWatcher
     public event EventHandler<int>? ForwardEstablished;
     public event EventHandler<int>? ForwardRemoved;
     public event EventHandler? ForwardsCleared;
+
+    /// <summary>Diagnostic: fires for every adb service string this connection requests
+    /// (both the transport-select and, when present, the per-device service that follows
+    /// it), regardless of whether it's forward-related.</summary>
+    public event EventHandler<string>? ServiceObserved;
 
     /// <summary>Feed bytes flowing from the adb client toward the server (the request side).</summary>
     public void OnClientToServer(ReadOnlySpan<byte> data)
@@ -91,6 +97,23 @@ public sealed class AdbForwardWatcher
             if (_reqBuf.Count < 4 + _reqBodyLength) return;
 
             var service = Encoding.ASCII.GetString(_reqBuf.GetRange(4, _reqBodyLength).ToArray());
+            ServiceObserved?.Invoke(this, service);
+
+            // A "select this device" request (host:transport:<serial>, host:transport-id:<id>,
+            // host-serial:<serial>:transport, ...) is followed by a SECOND framed request on
+            // the same connection — the actual per-device service being invoked (shell:,
+            // sync:, jdwp:<pid>, localabstract:<name>, ...). Diagnostic-only: reset to parse
+            // that second frame too, purely so ServiceObserved reports it; forward detection
+            // below is unaffected since forward:/killforward requests never go through a
+            // transport-select first.
+            if (!_transportSelectHandled && service.Contains("transport", StringComparison.Ordinal))
+            {
+                _transportSelectHandled = true;
+                _reqBuf.Clear();
+                _reqState = RequestState.AwaitingLength;
+                return;
+            }
+
             _reqState = RequestState.Done;
             ClassifyService(service);
         }

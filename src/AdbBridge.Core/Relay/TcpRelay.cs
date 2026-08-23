@@ -154,6 +154,7 @@ public sealed class TcpRelay : IAsyncDisposable
             watcher.ForwardEstablished += (_, port) => ForwardEstablished?.Invoke(this, port);
             watcher.ForwardRemoved += (_, port) => ForwardRemoved?.Invoke(this, port);
             watcher.ForwardsCleared += (_, _) => ForwardsCleared?.Invoke(this, EventArgs.Empty);
+            watcher.ServiceObserved += (_, service) => Log($"adb service request: {service}");
 
             if (prebuffered.Length > 0)
             {

@@ -40,7 +40,7 @@ public partial class CompanionView : UserControl, IBridgeView
         InitializeComponent();
 
         _settings = CompanionSettings.Load();
-        _log = new LogSink();
+        _log = new LogSink("companion");
         LogListBox.ItemsSource = _log.Lines;
         DeviceListView.ItemsSource = _devices;
 

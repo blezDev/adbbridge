@@ -71,6 +71,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
         {
             if (!_listeners.Remove(port, out listener)) return;
         }
+        Log($"Tearing down forward listener on 127.0.0.1:{port} (adb removed the forward).");
         await listener!.DisposeAsync();
     }
 
@@ -82,6 +83,8 @@ public sealed class ForwardPortRelay : IAsyncDisposable
             all = _listeners.Values.ToList();
             _listeners.Clear();
         }
+        if (all.Count > 0)
+            Log($"Tearing down all {all.Count} forward listener(s) (adb cleared all forwards).");
         foreach (var l in all)
             await l.DisposeAsync();
     }
@@ -151,10 +154,12 @@ public sealed class ForwardPortRelay : IAsyncDisposable
                 return;
             }
 
+            var acceptedAt = DateTime.UtcNow;
             try
             {
                 using var outbound = new TcpClient();
                 await outbound.ConnectAsync(target.Host, target.Port, ct);
+                Log($"Forwarded connection on port {_port} reached the tunnel in {(DateTime.UtcNow - acceptedAt).TotalMilliseconds:0}ms.");
 
                 var inboundStream = inbound.GetStream();
                 var outboundStream = outbound.GetStream();
