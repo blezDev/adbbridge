@@ -347,4 +347,59 @@ rebuild + relaunch, then retry Device Mirroring** — same as every prior round.
 whether all 3 (or however many) near-simultaneous `Real adb server connected...` events
 now all get `paired with a pooled tunnel connection` instead of 2-then-timeout, and
 whether Device Mirroring actually renders/attaches in Studio this time (the real
+
+## Retested: pool fix confirmed working, but a different root cause found (2026-08-23, Companion PC)
+
+Retested with the pool fix live on both sides (Host had already rebuilt by this point).
+`companion.log`: all 3 reverse connections this time got `received GO, dialing the local
+app` — **zero timeouts, zero `nothing local is listening` failures.** The pool-exhaustion
+fix works; the full bridge (device → Host → tunnel → Companion → Studio) connects
+end-to-end correctly now.
+
+Device Mirroring still failed, but faster (~2.5s vs ~7-9s before) and with **no exception
+logged in `idea.log` at all** this time — a different failure shape than the earlier
+`TimeoutException: Device agent is not responding`, which was the signature of nothing
+ever connecting. Something connects now; it just doesn't work.
+
+**Captured the device's own logcat through the bridge** (`adb logcat` run directly from
+Companion — it routes through the relay to the Host's real adb server exactly like any
+other adb client, no special access needed) during a fresh attempt. Full trace for PID
+19406 (the agent process) shows it starting correctly, initializing the hardware VP8
+encoder (`c2.android.vp8.encoder`), configuring the video format (320x730@60fps,
+10Mbps) — all normal — and then:
+
+```
+17:51:43.011 E/ion              (19406): ioctl c0044901 failed with code -1: Invalid argument
+17:51:43.014 W/studio.screen.sharing(19406): Display 0: AMediaCodec_dequeueOutputBuffer(..., 200000) returned -2
+17:51:43.791 E/NdkMediaCodec    (19406): sf error code: -38
+17:51:43.791 W/studio.screen.sharing(19406): Display 0: AMediaCodec_dequeueOutputBuffer(..., 30000000) returned -10000
+17:51:43.802 I/BufferQueueConsumer(19406): [GraphicBufferSource]... disconnect
+17:51:43.818 I/app_process      (19406): System.exit called, status: 0
+```
+
+**This is a device-side hardware video encoder failure, unrelated to the bridge.** `ion`
+(Android's graphics memory allocator) fails an `ioctl`, the codec starts returning error
+codes instead of encoded frames, and the agent's own code calls `System.exit(0)` — a
+deliberate clean exit, not a crash and not our earlier "nobody ever connected" timeout.
+The phone is an Infinix X6815B (Transsion, MediaTek-based — note `mediatek-cta.jar` and
+`vendor.tran.*` properties in the log). This looks like a device/vendor hardware codec
+compatibility issue with the VP8 encoder Device Mirroring's agent selects, and would very
+plausibly fail identically over a direct USB connection with no AdbBridge involved at
+all — nothing left to fix in the relay for this specific symptom.
+
+**Where this leaves the project:**
+- Forward tunneling (`ForwardBroker`/`ForwardPortRelay`), the `host:kill` guard, and the
+  reverse-tunnel pool (`ReversePoolRelay`) are all confirmed working end-to-end over a
+  real two-machine Pinggy tunnel. These fix real, previously-broken functionality:
+  Layout Inspector, Network/Database Inspector, and profilers (which use classic `adb
+  forward`) and the Device Mirroring *connection* itself (which needs `adb reverse`).
+- Device Mirroring specifically still doesn't render on **this** phone, but the cause
+  has moved from "AdbBridge doesn't tunnel this" (fixed) to "this phone's hardware video
+  encoder fails" (out of scope for a relay). Worth confirming by testing Device Mirroring
+  with the phone plugged in directly via USB (bypassing AdbBridge) if there's any doubt —
+  if it fails the same way there, that confirms it's fully unrelated to this project.
+- Not yet re-verified: Layout Inspector / Network Inspector / Database Inspector actually
+  opening and working in Studio's UI (the Transport-layer forward they depend on is
+  confirmed working at the relay level, but nobody has clicked through the actual Studio
+  panels yet).
 end-to-end signal, not just the relay-level pairing succeeding).
