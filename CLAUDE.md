@@ -176,3 +176,49 @@ tunnel, implemented in this commit:
    if the pool is empty when the real adb server dials in, either the pool isn't being
    replenished fast enough or `ReversePoolRelay` never started it (check for `Pooling
    reverse-tunnel connections...` in `companion.log` in the first place).
+
+## Host-side test result: pool never pairs (2026-08-23, Host PC)
+
+Rebuilt and ran as Host against the same live Companion (already running the reverse-pool
+build) and a real device attached here. Two Device Mirroring attempts from Studio,
+`host.log` shows the same pattern both times:
+
+```
+17:31:12  Reverse-tunnel stand-in listener bound on 127.0.0.1:61494 for adb reverse.
+17:31:17  Reverse connection on port 61494 timed out waiting for a pooled tunnel connection.
+
+17:31:34  Reverse-tunnel stand-in listener bound on 127.0.0.1:61555 for adb reverse.
+17:31:39  Reverse connection on port 61555 timed out waiting for a pooled tunnel connection.
+```
+
+So: `reverse:forward:` detection and the stand-in listener bind both work — confirmed on
+the Host side. But `PairReverseConnectionAsync` never finds a pooled connection in either
+attempt, timing out at exactly `ReversePairTimeout` (5.0s) both times. This is the "pool
+is empty" branch CLAUDE.md's step 5 above called out.
+
+**Not yet known — needs `companion.log` from the Companion PC to settle:**
+- Does `ReversePoolRelay` even log `Pooling reverse-tunnel connections for
+  127.0.0.1:61494...` / `...61555...` for these two ports? If not, the
+  `ReverseForwardEstablished` event never reached it (check `TcpRelay`'s parsing of the
+  device's `reverse:forward:localabstract:screen-sharing-agent-<N>;tcp:<N>` request on the
+  Companion side — same request `AdbForwardWatcher.ClassifyService` needs to recognize,
+  but parsed from a different position in the byte stream than the Host sees since the
+  Host only sees it after it's already relayed through).
+- If it does log pooling, are the pooled `REV:<port>\n` connections actually reaching
+  Host inside the 5s window? Measured Pinggy round-trip was ~760ms for a single
+  `host:version` earlier — opening a fresh tunnel connection, sending the marker, and
+  Host accepting it should be well inside 5s if the pool is actually being replenished,
+  so a timeout suggests either the pool isn't started at all for these ports, or something
+  about the Companion-side dial to the tunnel address is failing/retrying silently.
+- Worth also checking whether Host's `_brokerPort`/adb-server-port pairing has any
+  contention with the `ForwardBroker` accept loop under concurrent normal adb traffic —
+  the Pinggy log lines interleaved in `host.log` show steady byte counts (`RB`/`SB`)
+  throughout both attempts, so the tunnel itself was alive and moving data the whole time;
+  this isn't a "tunnel dropped" failure.
+
+**Suggested next step for whoever has `companion.log`:** grep it for `Pooling
+reverse-tunnel connections for 127.0.0.1:61494` and `...61555` (the exact two ports from
+this run) and for any `REV:` or connection-refused/failure lines in the same 17:31:07–17:31:40
+window (IST, matches `host.log` timestamps — confirm Companion's clock offset if any).
+If there's no `Pooling` line at all for those ports, the bug is on the detection/event
+side in `ReversePoolRelay`/`TcpRelay`, not the pairing timeout math.
