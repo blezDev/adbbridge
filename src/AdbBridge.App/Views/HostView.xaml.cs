@@ -7,6 +7,7 @@ using System.Windows.Threading;
 using AdbBridge.Core.Adb;
 using AdbBridge.Core.Config;
 using AdbBridge.Core.Logging;
+using AdbBridge.Core.Relay;
 using AdbBridge.Core.Tunnels;
 using Microsoft.Win32;
 using Clipboard = System.Windows.Clipboard;
@@ -26,6 +27,7 @@ public partial class HostView : UserControl, IBridgeView
     private readonly DispatcherTimer _statusTimer;
 
     private ITunnelProvider? _tunnel;
+    private ForwardBroker? _broker;
     private bool _isSharing;
     private const string RunKeyName = "AdbBridgeHost";
 
@@ -108,7 +110,7 @@ public partial class HostView : UserControl, IBridgeView
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            tunnel = new PinggyTunnelProvider(_settings.SshExePath, _settings.PinggyToken);
+            tunnel = new PinggyTunnelProvider(_settings.SshExePath, _settings.PinggyToken, ForwardBroker.DefaultPort);
         }
         else
         {
@@ -124,13 +126,17 @@ public partial class HostView : UserControl, IBridgeView
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            tunnel = new NgrokTunnelProvider(_settings.NgrokExePath, _settings.NgrokAuthToken);
+            tunnel = new NgrokTunnelProvider(_settings.NgrokExePath, _settings.NgrokAuthToken, ForwardBroker.DefaultPort);
         }
 
         StartStopButton.IsEnabled = false;
         try
         {
             _adb.StartNodaemonServer(_settings.PlatformToolsPath);
+
+            _broker = new ForwardBroker();
+            _broker.LogMessage += (_, msg) => _log.Append(msg);
+            await _broker.StartAsync();
 
             _tunnel = tunnel;
             _tunnel.LogMessage += (_, msg) => _log.Append(msg);
@@ -161,6 +167,11 @@ public partial class HostView : UserControl, IBridgeView
         {
             await _tunnel.DisposeAsync();
             _tunnel = null;
+        }
+        if (_broker is not null)
+        {
+            await _broker.DisposeAsync();
+            _broker = null;
         }
         _adb.StopServer();
 

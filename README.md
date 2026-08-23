@@ -96,6 +96,25 @@ startup Run key, so a relaunch after login goes straight to that screen instead 
 role picker. On the Companion screen, also checking **Auto-connect on startup** will
 reconnect automatically using the last address you entered, without any click.
 
+## Device Mirroring and App Inspection
+
+Plain adb commands (`shell`, `logcat`, `install`, `push`, and even the `adb forward`
+command itself) all ride inside the single relayed connection to the adb server, so they
+worked from day one. Android Studio's **Device Mirroring**, **Layout Inspector**,
+**Network/Database Inspector**, and JDWP debugging don't: `adb forward` makes the real adb
+server (which runs on the Host, next to the USB device) open a *separate* TCP listener,
+and Studio then connects to that port **directly**, bypassing the adb server protocol
+entirely. Since only the adb server's own port was tunneled, that direct connection used
+to find nothing listening on the Companion side and the feature failed silently — even
+though `adb forward` itself reported success.
+
+`ForwardBroker` (Host) and `ForwardPortRelay` (Companion) close that gap: the Companion
+side watches the adb protocol for `forward:`/`killforward` requests, and for each one
+opens a matching local listener that tunnels through to the real forwarded port on the
+Host. This is best-effort protocol parsing (not a supported adb API), so if a future adb
+version changes the `forward:` response framing, this degrades to the old behavior —
+`adb forward` still succeeds, but Studio's direct connection to it won't be tunneled.
+
 ## Known limitations
 
 - **No fully automatic address handoff on free tiers.** Unless you're on Pinggy Pro (or

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using AdbBridge.Core.Adb;
 using AdbBridge.Core.Tunnels;
 
@@ -23,13 +24,26 @@ public sealed class TcpRelay : IAsyncDisposable
     private readonly object _targetLock = new();
 
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
+    private const string HostKillService = "host:kill";
+    private static readonly byte[] OkayBytes = Encoding.ASCII.GetBytes("OKAY");
 
     public bool IsListening => _listener is not null && _cts is { IsCancellationRequested: false };
     public DateTime? LastSuccessfulConnection { get; private set; }
     public DateTime? LastFailedConnection { get; private set; }
     public string? LastError { get; private set; }
+    public TunnelInfo? Target { get { lock (_targetLock) return _target; } }
 
     public event EventHandler<string>? LogMessage;
+
+    /// <summary>
+    /// Raised when a relayed connection's <c>adb forward</c> request resolves to a local
+    /// port (see <see cref="AdbForwardWatcher"/>) — consumed by <see cref="ForwardPortRelay"/>
+    /// to open a matching listener here, since Android Studio's Device Mirroring / App
+    /// Inspection connect to that port directly rather than through this relay.
+    /// </summary>
+    public event EventHandler<int>? ForwardEstablished;
+    public event EventHandler<int>? ForwardRemoved;
+    public event EventHandler? ForwardsCleared;
 
     public TcpRelay(AdbProcessManager adbProcessManager, int localPort = 5037)
     {
@@ -114,6 +128,18 @@ public sealed class TcpRelay : IAsyncDisposable
 
         try
         {
+            var inboundStream = inbound.GetStream();
+
+            var (isKill, prebuffered) = await TryInterceptKillAsync(inboundStream, ct);
+            if (isKill)
+            {
+                await inboundStream.WriteAsync(OkayBytes, ct);
+                Log("Blocked a host:kill request from the local adb client — this relay's port " +
+                    "isn't the Host's real adb server, so a local `adb kill-server` can't be allowed " +
+                    "to tear down the remote one.");
+                return;
+            }
+
             using var outbound = new TcpClient();
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             connectCts.CancelAfter(ConnectTimeout);
@@ -122,13 +148,24 @@ public sealed class TcpRelay : IAsyncDisposable
             LastSuccessfulConnection = DateTime.UtcNow;
             LastError = null;
 
-            var inboundStream = inbound.GetStream();
             var outboundStream = outbound.GetStream();
 
-            var toRemote = inboundStream.CopyToAsync(outboundStream, ct);
-            var toLocal = outboundStream.CopyToAsync(inboundStream, ct);
+            var watcher = new AdbForwardWatcher();
+            watcher.ForwardEstablished += (_, port) => ForwardEstablished?.Invoke(this, port);
+            watcher.ForwardRemoved += (_, port) => ForwardRemoved?.Invoke(this, port);
+            watcher.ForwardsCleared += (_, _) => ForwardsCleared?.Invoke(this, EventArgs.Empty);
 
-            await Task.WhenAny(toRemote, toLocal);
+            if (prebuffered.Length > 0)
+            {
+                watcher.OnClientToServer(prebuffered);
+                await outboundStream.WriteAsync(prebuffered, ct);
+            }
+
+            await RelayPump.CopyBothWaysAsync(
+                inboundStream, outboundStream,
+                (buf, n) => watcher.OnClientToServer(buf.AsSpan(0, n)),
+                (buf, n) => watcher.OnServerToClient(buf.AsSpan(0, n)),
+                ct);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -142,6 +179,58 @@ public sealed class TcpRelay : IAsyncDisposable
             LastError = ex.Message;
             Log($"Relay connection error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Peeks the very first request frame on a fresh connection to check whether it's the
+    /// adb host service <c>host:kill</c> — the wire form of `adb kill-server` — before any
+    /// bytes touch the tunnel. This relay's local port is a stand-in for the Host's real
+    /// adb server; a plain byte-for-byte proxy would forward a local `adb kill-server`
+    /// straight through and actually kill the Host's real server, taking the phone's USB
+    /// connection down with it. Android Studio's own adb housekeeping issues this
+    /// routinely as part of its normal reconnect logic — harmless on a real local adb
+    /// server, destructive here. Every other request is left completely alone: the bytes
+    /// read here are handed back to the caller as <c>Prebuffered</c> to replay onward.
+    /// </summary>
+    private static async Task<(bool IsKill, byte[] Prebuffered)> TryInterceptKillAsync(NetworkStream inboundStream, CancellationToken ct)
+    {
+        var lenBuf = new byte[4];
+        var lenRead = await ReadFullyAsync(inboundStream, lenBuf, ct);
+        if (lenRead < lenBuf.Length)
+            return (false, lenBuf[..lenRead]);
+
+        if (!RelayPump.TryParseHexLength(lenBuf[0], lenBuf[1], lenBuf[2], lenBuf[3], out var bodyLen) ||
+            bodyLen != HostKillService.Length)
+        {
+            return (false, lenBuf);
+        }
+
+        var bodyBuf = new byte[HostKillService.Length];
+        var bodyRead = await ReadFullyAsync(inboundStream, bodyBuf, ct);
+        if (bodyRead < bodyBuf.Length ||
+            !Encoding.ASCII.GetString(bodyBuf).Equals(HostKillService, StringComparison.Ordinal))
+        {
+            var combined = new byte[lenBuf.Length + bodyRead];
+            lenBuf.CopyTo(combined, 0);
+            bodyBuf.AsSpan(0, bodyRead).CopyTo(combined.AsSpan(lenBuf.Length));
+            return (false, combined);
+        }
+
+        return (true, Array.Empty<byte>());
+    }
+
+    /// <summary>Reads until <paramref name="buffer"/> is full or the connection closes early,
+    /// returning how many bytes actually arrived.</summary>
+    private static async Task<int> ReadFullyAsync(Stream stream, byte[] buffer, CancellationToken ct)
+    {
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(total, buffer.Length - total), ct);
+            if (read <= 0) break;
+            total += read;
+        }
+        return total;
     }
 
     public async Task StopAsync()

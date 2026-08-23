@@ -29,6 +29,7 @@ public partial class CompanionView : UserControl, IBridgeView
 
     private TcpRelay? _relay;
     private PortGuardService? _guard;
+    private ForwardPortRelay? _forwardRelay;
     private bool _isConnected;
     private const string RunKeyName = "AdbBridgeCompanion";
 
@@ -120,6 +121,9 @@ public partial class CompanionView : UserControl, IBridgeView
             _guard.LogMessage += (_, msg) => _log.Append(msg);
             _guard.Start();
 
+            _forwardRelay = new ForwardPortRelay(_relay);
+            _forwardRelay.LogMessage += (_, msg) => _log.Append(msg);
+
             _isConnected = true;
             ConnectButton.Content = "Disconnect";
             _deviceRefreshTimer.Start();
@@ -143,6 +147,11 @@ public partial class CompanionView : UserControl, IBridgeView
         _deviceRefreshTimer.Stop();
         _statusTimer.Stop();
 
+        if (_forwardRelay is not null)
+        {
+            await _forwardRelay.DisposeAsync();
+            _forwardRelay = null;
+        }
         if (_guard is not null)
         {
             await _guard.DisposeAsync();
