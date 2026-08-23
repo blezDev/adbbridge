@@ -325,3 +325,26 @@ changes needed on the Host/`ForwardBroker` side, which is already behaving corre
 (binds, queues, pairs, and times out exactly as designed). After implementing, retest by
 watching for a 4th+ `Real adb server connected... paired` sequence landing within the same
 burst as the first two, not just 2-then-timeout.
+
+## Fix implemented: decoupled replenishment (2026-08-23, Companion PC)
+
+`ReversePoolRelay.PortPool` rewritten as suggested above. `PoolSizePerPort` renamed in
+spirit to an idle-standby target and bumped `2 → 4`. Replaced the one-task-per-slot loop
+(`RunSlotAsync`, which only opened a new connection after its *own* bridge fully closed)
+with `MaintainIdleConnectionAsync`: each task owns exactly one pooled connection: open,
+send marker, wait for GO — and the instant GO arrives, it calls `SpawnIdleConnection()`
+to fire off a brand new independent task *before* dialing the local app and running
+`BridgeConsumedConnectionAsync`. So a consumed slot's own lifetime (which can be the
+entire mirroring session) no longer blocks the idle count from being restored — it's
+restored immediately instead.
+
+`PortPool.DisposeAsync` now snapshots whatever's in the dynamically-growing `_tasks` list
+under a lock and awaits that (best-effort — a task spawned in the exact instant disposal
+starts might not be captured, but it still observes `_cts` and exits on its own quickly).
+
+Companion is running this build now (this session). **Needs the Host PC to `git pull` +
+rebuild + relaunch, then retry Device Mirroring** — same as every prior round. Watch for
+whether all 3 (or however many) near-simultaneous `Real adb server connected...` events
+now all get `paired with a pooled tunnel connection` instead of 2-then-timeout, and
+whether Device Mirroring actually renders/attaches in Studio this time (the real
+end-to-end signal, not just the relay-level pairing succeeding).

@@ -25,7 +25,10 @@ namespace AdbBridge.Core.Relay;
 /// </summary>
 public sealed class ReversePoolRelay : IAsyncDisposable
 {
-    private const int PoolSizePerPort = 2;
+    // Device Mirroring's screen-sharing-agent opens several reverse connections at once
+    // on startup (observed: 3, landing within the same second) — this needs to be an
+    // idle-standby target with headroom, not a hard concurrency cap.
+    private const int PoolSizePerPort = 4;
 
     private readonly TcpRelay _relay;
     private readonly Dictionary<string, int> _remoteSpecToPort = new();
@@ -108,33 +111,54 @@ public sealed class ReversePoolRelay : IAsyncDisposable
 
     private void Log(string message) => LogMessage?.Invoke(this, message);
 
-    /// <summary>Keeps <see cref="PoolSizePerPort"/> tunnel connections open and waiting
-    /// for one local port at all times, replenishing each slot as soon as it's consumed
-    /// by a real reverse-connect (or dies before ever being paired).</summary>
+    /// <summary>
+    /// Keeps <see cref="PoolSizePerPort"/> tunnel connections open and idle for one local
+    /// port at all times. Replenishment is decoupled from how long a consumed connection's
+    /// bridge then runs: the moment a pooled connection is paired (receives "GO"), a fresh
+    /// idle replacement is spawned immediately, before dialing the local app and starting
+    /// the (potentially long-lived — a live mirroring session) bridge. Tying replenishment
+    /// to the bridge's own lifetime, as an earlier version of this did, silently exhausts
+    /// the pool the moment concurrently-consumed connections outlive a few seconds — which
+    /// Device Mirroring's screen-sharing-agent does immediately, opening several reverse
+    /// connections at once and holding at least one open for the whole session.
+    /// </summary>
     private sealed class PortPool : IAsyncDisposable
     {
         private readonly int _port;
         private readonly TcpRelay _relay;
-        private readonly int _size;
+        private readonly int _idleTarget;
         private readonly CancellationTokenSource _cts = new();
-        private readonly List<Task> _slots = new();
+        private readonly List<Task> _tasks = new();
+        private readonly object _tasksGate = new();
 
         public event EventHandler<string>? LogMessage;
 
-        public PortPool(int port, TcpRelay relay, int size)
+        public PortPool(int port, TcpRelay relay, int idleTarget)
         {
             _port = port;
             _relay = relay;
-            _size = size;
+            _idleTarget = idleTarget;
         }
 
         public void Start()
         {
-            for (var i = 0; i < _size; i++)
-                _slots.Add(RunSlotAsync(_cts.Token));
+            for (var i = 0; i < _idleTarget; i++)
+                SpawnIdleConnection();
         }
 
-        private async Task RunSlotAsync(CancellationToken ct)
+        private void SpawnIdleConnection()
+        {
+            if (_cts.IsCancellationRequested) return;
+
+            var task = MaintainIdleConnectionAsync(_cts.Token);
+            lock (_tasksGate) { _tasks.Add(task); }
+        }
+
+        /// <summary>Owns one idle pooled connection at a time: opens it, waits for GO, and
+        /// upon pairing immediately spawns its own replacement before handling the bridge
+        /// itself — so this task's own remaining lifetime never blocks the pool's idle
+        /// count from being restored.</summary>
+        private async Task MaintainIdleConnectionAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
@@ -160,22 +184,17 @@ public sealed class ReversePoolRelay : IAsyncDisposable
                     // connection with a genuine device-originated reverse-connect.
                     if (!await WaitForGoAsync(stream, ct))
                     {
-                        continue; // dead before pairing, or pool torn down — retry a fresh slot
+                        tunnel.Dispose();
+                        continue; // dead before pairing, or pool torn down — retry this slot
                     }
                     Log($"Reverse-tunnel port {_port}: received GO, dialing the local app.");
 
-                    using var local = new TcpClient();
-                    try
-                    {
-                        await local.ConnectAsync(IPAddress.Loopback, _port, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"Reverse-tunnel port {_port}: nothing local is listening ({ex.Message}).");
-                        continue;
-                    }
+                    // Consumed — backfill the idle count now, independent of how long the
+                    // bridge below ends up running.
+                    SpawnIdleConnection();
 
-                    await RelayPump.CopyBothWaysAsync(stream, local.GetStream(), ct);
+                    await BridgeConsumedConnectionAsync(tunnel, stream, ct);
+                    return; // this task's one job (this one connection) is done
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -184,12 +203,26 @@ public sealed class ReversePoolRelay : IAsyncDisposable
                 catch (Exception ex)
                 {
                     Log($"Reverse-tunnel pool slot for port {_port} failed: {ex.Message}");
-                }
-                finally
-                {
                     tunnel?.Dispose();
                 }
             }
+        }
+
+        private async Task BridgeConsumedConnectionAsync(TcpClient tunnel, NetworkStream stream, CancellationToken ct)
+        {
+            using var _ = tunnel;
+            using var local = new TcpClient();
+            try
+            {
+                await local.ConnectAsync(IPAddress.Loopback, _port, ct);
+            }
+            catch (Exception ex)
+            {
+                Log($"Reverse-tunnel port {_port}: nothing local is listening ({ex.Message}).");
+                return;
+            }
+
+            await RelayPump.CopyBothWaysAsync(stream, local.GetStream(), ct);
         }
 
         private static async Task<bool> WaitForGoAsync(NetworkStream stream, CancellationToken ct)
@@ -210,7 +243,9 @@ public sealed class ReversePoolRelay : IAsyncDisposable
         public async ValueTask DisposeAsync()
         {
             _cts.Cancel();
-            try { await Task.WhenAll(_slots); } catch { /* swallow cancellation */ }
+            List<Task> snapshot;
+            lock (_tasksGate) { snapshot = _tasks.ToList(); }
+            try { await Task.WhenAll(snapshot); } catch { /* swallow cancellation */ }
             _cts.Dispose();
         }
 
