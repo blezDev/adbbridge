@@ -272,3 +272,56 @@ that too). If (2) happens before (3), the connection was queued in time and the 
 is genuinely unexplained by ordering — worth checking whether `port` in step 2's log
 matches exactly what step 3 reports, in case of a subtle port-number mismatch between the
 two sides.
+
+## Root cause found: pool exhaustion, not a race (2026-08-23, Host PC, rebuilt with instrumentation)
+
+The four new log lines answered it immediately — no ambiguity. `host.log`, port 54540,
+one Device Mirroring attempt:
+
+```
+17:40:17  Reverse-tunnel connection from Companion queued for port 54540.   (slot 1)
+17:40:17  Reverse-tunnel connection from Companion queued for port 54540.   (slot 2)
+17:40:17  Real adb server connected... waiting up to 5s...
+17:40:17  Reverse connection on port 54540 paired with a pooled tunnel connection.   #1 OK
+17:40:17  Real adb server connected... waiting up to 5s...
+17:40:17  Reverse connection on port 54540 paired with a pooled tunnel connection.   #2 OK
+17:40:17  Real adb server connected... waiting up to 5s...
+          [5s of normal Pinggy traffic, no replenishment log]
+17:40:22  Reverse connection on port 54540 timed out waiting for a pooled tunnel connection.   #3 FAILED
+17:40:22  Reverse-tunnel connection from Companion queued for port 54540.   (replenishment — 5s too late)
+17:40:22  Reverse-tunnel connection from Companion queued for port 54540.
+```
+
+The screen-sharing-agent opens **three** near-simultaneous reverse connections at startup
+(all three `Real adb server connected` lines land in the same second) — not one, as
+assumed when `PoolSizePerPort = 2` was picked. The first two pair instantly and correctly.
+The third times out.
+
+**This is not a latency/race bug, it's pool exhaustion by design.** In
+[ReversePoolRelay.cs](src/AdbBridge.Core/Relay/ReversePoolRelay.cs), `RunSlotAsync`'s loop
+(lines 137–193) only opens a fresh pooled connection *after* `await
+RelayPump.CopyBothWaysAsync(...)` on line 178 returns — i.e. after that slot's bridged
+data connection fully closes and the loop wraps back to the top. But the two successful
+pairings became long-lived data streams (the mirroring session itself), so both slots stay
+consumed for the session's whole duration — they don't free up in 5s, they free up when
+mirroring stops. `PoolSizePerPort` is effectively "how many concurrent live connections
+this pool can ever support," not "how many idle spares are kept on standby," because
+replenishment is serialized behind each slot's own bridge lifetime instead of being
+decoupled from it.
+
+**Fix direction (not yet implemented):** spawn a new idle pooled-connection task the
+moment a slot's connection is *consumed* (paired via GO), independent of how long that
+consumed connection's bridge then runs — e.g. replace the one-task-per-slot loop with a
+target idle-count (still `PoolSizePerPort`, or bump it) maintained by a semaphore/counter,
+where each successful pairing immediately triggers spinning up a replacement idle
+connection in a new fire-and-forget task rather than waiting inline. Also worth bumping
+`PoolSizePerPort` past whatever the real concurrent-connection ceiling turns out to be
+(3 was enough to reproduce here; unclear if Studio ever wants more, e.g. if audio mirroring
+or multiple inspector features are active simultaneously) as a belt-and-suspenders margin
+even after replenishment is decoupled.
+
+**Whoever picks this up next:** the fix is isolated to `ReversePoolRelay.PortPool` — no
+changes needed on the Host/`ForwardBroker` side, which is already behaving correctly
+(binds, queues, pairs, and times out exactly as designed). After implementing, retest by
+watching for a 4th+ `Real adb server connected... paired` sequence landing within the same
+burst as the first two, not just 2-then-timeout.
