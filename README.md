@@ -221,6 +221,13 @@ that changes the wire framing could degrade this back to the old behavior — th
 underlying `forward`/`reverse` command would still succeed, but Studio's direct
 connection to it wouldn't be tunneled.
 
+Forwarding-rule lifetime and stream lifetime are separate: removing a forward or
+reverse mapping stops new connections while established streams remain alive. This
+matters because scrcpy and Studio can remove setup mappings immediately after their
+sockets connect. Disconnecting Companion closes all retained streams. Reverse slots
+are replenished after connecting locally, preserving video/control arrival order
+without limiting how many established streams can run at once.
+
 Separately, `TcpRelay` also intercepts `host:kill` (the wire form of `adb kill-server`)
 from the Companion's local adb client and answers it locally instead of forwarding it —
 Android Studio's own adb housekeeping issues this routinely as part of normal reconnect
@@ -231,12 +238,11 @@ Both apps also write a rolling log to `%LOCALAPPDATA%\AdbBridge\logs\{host,compa
 (overwritten fresh each run) in addition to the in-app log panel, useful for diagnosing a
 connection issue after the fact.
 
-**Note:** with all of the above working, Device Mirroring's *connection* is confirmed
-tunneling correctly end-to-end — but whether the mirrored screen actually renders still
-depends on the phone's own hardware video encoder cooperating, which is outside this
-project's control. If mirroring still fails after connecting, check `adb logcat` for the
-`screensharing`/`MediaCodec` tags around the failure; a device-side codec error there
-means the same failure would likely happen over a direct USB connection too.
+**Note:** codec errors around agent shutdown do not by themselves prove a phone hardware
+failure: prematurely closing an established stream can also trigger codec teardown
+errors. Live scrcpy tests with the stream-lifetime fix completed in both forward and
+reverse mode. Native Studio mirroring must be retested separately before claiming
+that its device-specific issue is resolved.
 
 ## Known limitations
 

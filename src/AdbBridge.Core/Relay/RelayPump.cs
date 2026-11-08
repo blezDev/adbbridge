@@ -7,12 +7,8 @@ namespace AdbBridge.Core.Relay;
 internal static class RelayPump
 {
     /// <summary>Plain bidirectional copy with no visibility into the bytes.</summary>
-    public static async Task CopyBothWaysAsync(Stream a, Stream b, CancellationToken ct)
-    {
-        var aToB = a.CopyToAsync(b, ct);
-        var bToA = b.CopyToAsync(a, ct);
-        await Task.WhenAny(aToB, bToA);
-    }
+    public static Task CopyBothWaysAsync(Stream a, Stream b, CancellationToken ct) =>
+        CopyBothWaysAsync(a, b, null, null, ct);
 
     /// <summary>
     /// Bidirectional copy where each chunk is also handed to an observer before being
@@ -25,9 +21,16 @@ internal static class RelayPump
         Action<byte[], int>? observeAToB, Action<byte[], int>? observeBToA,
         CancellationToken ct)
     {
-        var aToB = PumpAsync(a, b, observeAToB, ct);
-        var bToA = PumpAsync(b, a, observeBToA, ct);
-        await Task.WhenAny(aToB, bToA);
+        using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var aToB = PumpAsync(a, b, observeAToB, session.Token);
+        var bToA = PumpAsync(b, a, observeBToA, session.Token);
+        var completed = await Task.WhenAny(aToB, bToA);
+        try { await completed; }
+        finally
+        {
+            await session.CancelAsync();
+            try { await Task.WhenAll(aToB, bToA); } catch { /* observe the other direction before releasing its streams */ }
+        }
     }
 
     private static async Task PumpAsync(Stream source, Stream destination, Action<byte[], int>? observe, CancellationToken ct)

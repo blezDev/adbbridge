@@ -28,6 +28,7 @@ public sealed class TcpRelay : IAsyncDisposable
     private static readonly byte[] OkayBytes = Encoding.ASCII.GetBytes("OKAY");
 
     public bool IsListening => _listener is not null && _cts is { IsCancellationRequested: false };
+    public int LocalPort => (_listener?.LocalEndpoint as IPEndPoint)?.Port ?? _localPort;
     public DateTime? LastSuccessfulConnection { get; private set; }
     public DateTime? LastFailedConnection { get; private set; }
     public string? LastError { get; private set; }

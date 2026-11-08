@@ -25,6 +25,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
     private readonly TcpRelay _relay;
     private readonly Dictionary<int, PortListener> _listeners = new();
     private readonly object _gate = new();
+    private readonly RelayConnections _connections = new();
 
     public event EventHandler<string>? LogMessage;
 
@@ -47,7 +48,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
             if (_listeners.ContainsKey(port)) return;
         }
 
-        var listener = new PortListener(port, _relay);
+        var listener = new PortListener(port, _relay, _connections);
         listener.LogMessage += (_, msg) => Log(msg);
 
         try
@@ -71,7 +72,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
         {
             if (!_listeners.Remove(port, out listener)) return;
         }
-        Log($"Tearing down forward listener on 127.0.0.1:{port} (adb removed the forward).");
+        Log($"Stopping forward listener on 127.0.0.1:{port}; established streams remain connected.");
         await listener!.DisposeAsync();
     }
 
@@ -95,6 +96,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
         _relay.ForwardRemoved -= OnForwardRemoved;
         _relay.ForwardsCleared -= OnForwardsCleared;
         await StopAllAsync();
+        await _connections.DisposeAsync();
     }
 
     private void Log(string message) => LogMessage?.Invoke(this, message);
@@ -105,16 +107,18 @@ public sealed class ForwardPortRelay : IAsyncDisposable
     {
         private readonly int _port;
         private readonly TcpRelay _relay;
+        private readonly RelayConnections _connections;
         private readonly CancellationTokenSource _cts = new();
         private TcpListener? _listener;
         private Task? _acceptLoopTask;
 
         public event EventHandler<string>? LogMessage;
 
-        public PortListener(int port, TcpRelay relay)
+        public PortListener(int port, TcpRelay relay, RelayConnections connections)
         {
             _port = port;
             _relay = relay;
+            _connections = connections;
         }
 
         public Task StartAsync()
@@ -139,7 +143,7 @@ public sealed class ForwardPortRelay : IAsyncDisposable
                 catch (OperationCanceledException) { break; }
                 catch (ObjectDisposedException) { break; }
 
-                _ = HandleClientAsync(client, ct);
+                _connections.Start(sessionToken => HandleClientAsync(client, sessionToken), client.Dispose);
             }
         }
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.0.4
+
+- Keep established forward and reverse streams alive when ADB mappings are removed. scrcpy and Studio can remove their setup mappings immediately after connecting; this must not disconnect video or control sockets.
+- Preserve reverse connection arrival order across the tunnel by replenishing one idle slot only after its local connection succeeds. Active sessions remain concurrent.
+- Cancel and await both relay directions when an actual session closes, and close all retained streams when Companion disconnects.
+- Verified live scrcpy forward and reverse mirroring for 20 seconds each, mostly around 30 FPS, with normal exit.
+
+### Test this release
+
+Choose **Update and restart** in AdbBridge, or download and extract the Windows ZIP.
+On Companion, connect to the Host, select a ready device, and click **Mirror device**.
+Video should stay connected after scrcpy finishes its initial tunnel setup.
+
+Regression checks cover forward/reverse mapping removal, remove-all, port reuse,
+active-session shutdown, and video/control connection ordering. Native Android Studio
+mirroring still needs a separate retest; the fix is verified for scrcpy.
+
 ## v1.0.3
 
 - Unify the role chooser, Host, and Companion screens with shared colors, typography, card layouts, control sizes, and status badges.

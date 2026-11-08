@@ -1,5 +1,30 @@
 # AdbBridge — project context
 
+## Confirmed mirroring stream-lifetime bug and fix
+
+Live scrcpy tests against the Infinix showed disconnects exactly when scrcpy removed
+its forwarding rule. Both `ForwardPortRelay` and `ReversePoolRelay` canceled active
+streams with the mapping's listener/pool token. They now transfer established streams
+to a session-wide `RelayConnections` owner; mapping removal stops only listeners and
+idle slots. Full Companion disposal cancels and drains active streams too.
+
+Parallel reverse slots also allowed scrcpy video/control connections to arrive out
+of order over the WAN. There is now one standby slot, replenished only after connecting
+to the local app. Established streams have independent lifetimes and remain concurrent.
+`RelayPump` cancels and observes both directions when a stream actually ends.
+
+Checks: `dotnet run --project tests/AdbBridge.RelayTests -c Release`. Optional `-- --device`
+runs 20-second live forward and reverse scrcpy tests on an isolated local ADB port,
+leaving the running Companion untouched. Both modes streamed the actual phone mostly
+around 30 FPS and exited normally. Native Studio mirroring has not yet been retested.
+The patched executable was installed into the Downloads copy with a previous-binary
+backup. The app was closed during the final UI click-through, so reconnect through
+Companion before using its Mirror device button. Published v1.0.3 assets were not
+replaced by the local patch. Release v1.0.4 includes the stream-lifetime and
+reverse-ordering fixes.
+Earlier hardware-only conclusions below were premature; codec teardown errors can be
+caused by the bridge closing the active streams.
+
 ## Modern desktop UI
 
 `Theme.xaml` holds shared brushes and rounded control templates. The role chooser
