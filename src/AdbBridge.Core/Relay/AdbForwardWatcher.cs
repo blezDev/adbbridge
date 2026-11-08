@@ -11,7 +11,8 @@ namespace AdbBridge.Core.Relay;
 ///
 /// Every adb host request is framed as a 4-byte lowercase-hex length followed by that
 /// many bytes of an ASCII service string (e.g. "000dhost:version"); a one-shot host:
-/// command like "forward:" replies with "OKAY"/"FAIL", and — only when the client asked
+/// command like "forward:" replies with a service status followed by an operation
+/// "OKAY"/"FAIL", and — only when the client asked
 /// for an OS-assigned port via "tcp:0" — a second 4-hex-length-prefixed frame carrying the
 /// resolved port as a decimal string. This only ever buffers a few dozen bytes: as soon as
 /// a connection's request frame is parsed and it isn't a forward-family command, watching
@@ -24,7 +25,7 @@ public sealed class AdbForwardWatcher
     private const int MaxResponseBuffer = 64;
 
     private enum RequestState { AwaitingLength, AwaitingBody, Done }
-    private enum ResponseState { Idle, AwaitingStatus, AwaitingResolvedLength, AwaitingResolvedBody, Done }
+    private enum ResponseState { Idle, AwaitingStatus, AwaitingCommandStatus, AwaitingResolvedLength, AwaitingResolvedBody, Done }
     private enum ForwardKind { None, Install, Remove, RemoveAll, ReverseInstall, ReverseRemove, ReverseRemoveAll }
 
     private readonly object _gate = new();
@@ -120,11 +121,13 @@ public sealed class AdbForwardWatcher
             // that second frame too, purely so ServiceObserved reports it; forward detection
             // below is unaffected since forward:/killforward requests never go through a
             // transport-select first.
-            if (!_transportSelectHandled && service.Contains("transport", StringComparison.Ordinal))
+            if (!_transportSelectHandled && (service.Contains("transport", StringComparison.Ordinal) ||
+                service.StartsWith("host:tport:", StringComparison.Ordinal)))
             {
                 _transportSelectHandled = true;
-                _reqBuf.Clear();
+                _reqBuf.RemoveRange(0, 4 + _reqBodyLength);
                 _reqState = RequestState.AwaitingLength;
+                if (_reqBuf.Count > 0) AppendRequest(ReadOnlySpan<byte>.Empty);
                 return;
             }
 
@@ -251,6 +254,22 @@ public sealed class AdbForwardWatcher
             if (!string.Equals(status, "OKAY", StringComparison.Ordinal))
             {
                 _respState = ResponseState.Done; // FAIL, or garbage — nothing to relay
+                return;
+            }
+
+            // The smart-socket service acceptance and the forwarding operation each
+            // return a status. The first OKAY does not mean the mapping succeeded.
+            _respState = ResponseState.AwaitingCommandStatus;
+        }
+
+        if (_respState == ResponseState.AwaitingCommandStatus)
+        {
+            if (_respBuf.Count < 4) return;
+            var status = Encoding.ASCII.GetString(_respBuf.GetRange(0, 4).ToArray());
+            _respBuf.RemoveRange(0, 4);
+            if (status != "OKAY")
+            {
+                _respState = ResponseState.Done;
                 return;
             }
 

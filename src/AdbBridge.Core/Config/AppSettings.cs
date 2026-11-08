@@ -58,6 +58,7 @@ public sealed class HostSettings
 
 public sealed class CompanionSettings
 {
+    public string ScrcpyExePath { get; set; } = string.Empty;
     public string PlatformToolsPath { get; set; } = string.Empty;
     public string LastTunnelAddress { get; set; } = string.Empty;
     public bool RunAtStartup { get; set; }

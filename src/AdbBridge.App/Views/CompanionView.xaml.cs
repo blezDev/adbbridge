@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -69,6 +70,70 @@ public partial class CompanionView : UserControl, IBridgeView
     }
 
     public void Cleanup() => _ = DisconnectAsync();
+
+    private void MirrorButton_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Window.GetWindow(this);
+        var ready = _devices.Where(d => d.State == "device").ToList();
+        var device = DeviceListView.SelectedItem as AdbDevice;
+        if (device is null && ready.Count == 1) device = ready[0];
+        if (!_isConnected || device?.State != "device")
+        {
+            MessageBox.Show(owner, "Connect to the Host and select a ready device first.", "Device mirroring");
+            return;
+        }
+
+        if (!File.Exists(_settings.ScrcpyExePath))
+        {
+            var dialog = new OpenFileDialog { Title = "Select scrcpy.exe from an extracted scrcpy release", Filter = "scrcpy executable|scrcpy.exe" };
+            if (dialog.ShowDialog(owner) != true) return;
+            _settings.ScrcpyExePath = dialog.FileName;
+            _settings.Save();
+        }
+
+        try
+        {
+            var start = new ProcessStartInfo(_settings.ScrcpyExePath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(_settings.ScrcpyExePath)!,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            // Use Studio's adb and our local relay, even when scrcpy bundles another adb.
+            start.Environment["ADB"] = _settings.PlatformToolsPath;
+            start.Environment["ADB_SERVER_SOCKET"] = "tcp:127.0.0.1:5037";
+            foreach (var argument in new[] { "--serial", device.Serial, "--force-adb-forward",
+                         "--video-codec=h264", "--max-size=1280", "--max-fps=30", "--no-audio" })
+                start.ArgumentList.Add(argument);
+            var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, args) => { if (args.Data is { } line) _log.Append($"scrcpy: {line}"); };
+            process.ErrorDataReceived += (_, args) => { if (args.Data is { } line) _log.Append($"scrcpy: {line}"); };
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            _ = ObserveScrcpyAsync(process);
+        }
+        catch (Exception ex)
+        {
+            _log.Append($"Could not start scrcpy: {ex.Message}");
+            MessageBox.Show(owner, ex.Message, "Device mirroring", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async Task ObserveScrcpyAsync(Process process)
+    {
+        using (process)
+        {
+            try
+            {
+                await process.WaitForExitAsync();
+                _log.Append($"scrcpy exited with code {process.ExitCode}.");
+            }
+            catch (Exception ex) { _log.Append($"scrcpy monitoring failed: {ex.Message}"); }
+        }
+    }
 
     private void BackButton_Click(object sender, RoutedEventArgs e)
     {

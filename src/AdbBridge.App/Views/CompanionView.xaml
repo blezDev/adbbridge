@@ -68,7 +68,10 @@
             </StackPanel>
         </Border>
 
-        <TextBlock Grid.Row="5" Text="Devices seen through the relay" Style="{StaticResource LabelStyle}"/>
+        <DockPanel Grid.Row="5" Margin="0,0,0,6">
+            <Button Content="Mirror with scrcpy..." DockPanel.Dock="Right" Padding="10,4" Click="MirrorButton_Click"/>
+            <TextBlock Text="Devices seen through the relay" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+        </DockPanel>
 
         <ListView x:Name="DeviceListView" Grid.Row="6" Margin="0,0,0,12">
             <ListView.View>

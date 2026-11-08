@@ -1,5 +1,20 @@
 # AdbBridge — project context
 
+## Native Android Studio mirroring codec override (2026-11-09)
+
+The VP8 failure described below has a Studio-side workaround worth testing before
+concluding that native mirroring cannot work. Official Studio source defines
+`device.mirroring.video.codec` as a string feature flag. `PropertyOverrides` reads
+the flag ID directly from Java system properties, and `DeviceClient` passes its
+value to the agent as `--codec=<value>`. The agent maps `avc` to `video/avc` (H.264).
+
+Configured this Companion machine's AndroidStudio2026.2.2 custom `idea.properties`
+with `device.mirroring.video.codec=avc`. The IDE was left running because it had active
+terminal work. A restart and real mirroring test remain required. Verify the next
+agent launch in `idea.log` includes `--codec=avc` and that Running Devices renders
+the phone before calling the workaround confirmed. The separate scrcpy button does
+not configure or replace native Studio mirroring.
+
 Windows WPF app (net8.0-windows) that lets Android Studio on a Cloud PC (no USB access)
 see a phone plugged into a separate Local PC, by relaying the adb protocol over an
 ngrok/Pinggy tunnel. One `AdbBridge.exe`, run as **Host** (phone attached) on one machine

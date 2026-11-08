@@ -98,6 +98,52 @@ reconnect automatically using the last address you entered, without any click.
 
 ## Device Mirroring and App Inspection
 
+### Mirroring inside Android Studio
+
+Keep Host and Companion connected, then open **View > Tool Windows > Running Devices**
+in Android Studio and select the phone. The bridge's reverse tunnels carry Studio's
+screen-sharing agent connections; scrcpy is not required for this mode.
+
+If Studio's agent exits while using the phone's VP8 encoder (observed on the Infinix
+X6815B), switch Studio's own video codec to H.264. Open **Help > Edit Custom Properties**
+and add:
+
+```properties
+device.mirroring.video.codec=avc
+```
+
+Restart Android Studio and start mirroring again. The agent launch command in
+Studio's `idea.log` should now contain `--codec=avc`. This is an internal Studio
+feature flag and may change between versions. Remove the line and restart to restore
+Studio's default codec. The setting applies to physical-device mirroring across the IDE.
+H.264 avoids the failing VP8 codec, but still requires a working H.264 encoder on the
+phone; successful rendering must be checked on the actual device.
+
+### Optional standalone scrcpy window
+
+On Companion, select a ready device and click **Mirror with scrcpy...**. The first
+time, select `scrcpy.exe` from an extracted official
+[scrcpy release](https://github.com/Genymobile/scrcpy/releases); keep the entire release
+folder, including its server and libraries. The executable path is saved. Mirroring
+opens in scrcpy's own window and logs startup errors in the Companion log.
+
+This uses scrcpy's forward-tunnel mode through the bridge, with H.264, a maximum
+dimension of 1280 pixels, 30 FPS, and audio disabled. It provides an alternative for
+phones whose VP8 encoder fails with Android Studio's screen-sharing agent. It does
+not change Studio's built-in mirroring implementation. Close the scrcpy window before
+disconnecting the bridge.
+
+For App Inspection, use a running debuggable app in Android Studio. Forward mappings
+are announced only after both ADB service acceptance and forwarding-operation success;
+allocated `tcp:0` ports are read after those two statuses. Failed mappings do not open
+Companion listeners.
+
+Protocol regression checks (no phone or external test packages required):
+
+```powershell
+dotnet run --project tests/AdbBridge.ProtocolTests
+```
+
 Plain adb commands (`shell`, `logcat`, `install`, `push`, and even the `adb forward`/
 `adb reverse` commands themselves) all ride inside the single relayed connection to the
 adb server, so they worked from day one. Android Studio's **Layout Inspector**,
