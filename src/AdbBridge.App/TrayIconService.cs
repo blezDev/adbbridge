@@ -94,6 +94,13 @@ public sealed class TrayIconService : IDisposable
         ExitRequested?.Invoke();
     }
 
+    public void PrepareForShutdown()
+    {
+        _isExiting = true;
+        _notifyIcon.Visible = false;
+        Dispose();
+    }
+
     private void ShowWindow()
     {
         _window.Show();

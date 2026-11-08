@@ -70,6 +70,7 @@ public partial class CompanionView : UserControl, IBridgeView
     }
 
     public void Cleanup() => _ = DisconnectAsync();
+    public Task CleanupAsync() => DisconnectAsync();
 
     private void MirrorButton_Click(object sender, RoutedEventArgs e)
     {

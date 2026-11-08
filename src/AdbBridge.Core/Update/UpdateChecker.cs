@@ -3,18 +3,16 @@ using System.Text.Json;
 
 namespace AdbBridge.Core.Update;
 
-public sealed record UpdateInfo(string Version, string ReleaseUrl);
+public sealed record UpdateInfo(string Version, string ReleaseUrl, string? DownloadUrl = null, string? ChecksumUrl = null);
 
 /// <summary>
-/// Checks GitHub Releases for a version newer than the one currently running. Read-only
-/// (no download/self-replace) — surfaces a link to the release page and lets the user
-/// decide whether to grab it, rather than silently replacing a running executable.
+/// Finds a newer stable release and its Windows package and checksum assets.
 /// </summary>
 public static class UpdateChecker
 {
     private const string ApiUrl = "https://api.github.com/repos/blezDev/adbbridge/releases/latest";
 
-    public static async Task<UpdateInfo?> CheckAsync(CancellationToken ct = default)
+    public static async Task<UpdateInfo?> CheckAsync(CancellationToken ct = default, bool throwOnError = false)
     {
         try
         {
@@ -22,29 +20,44 @@ public static class UpdateChecker
             http.DefaultRequestHeaders.UserAgent.ParseAdd("AdbBridge-UpdateChecker");
 
             using var response = await http.GetAsync(ApiUrl, ct);
-            if (!response.IsSuccessStatusCode) return null;
+            response.EnsureSuccessStatusCode();
 
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            if (!doc.RootElement.TryGetProperty("tag_name", out var tagProp) ||
-                !doc.RootElement.TryGetProperty("html_url", out var urlProp))
-                return null;
-
-            var tag = tagProp.GetString();
-            var url = urlProp.GetString();
-            if (string.IsNullOrEmpty(tag) || string.IsNullOrEmpty(url)) return null;
-
-            var latest = ParseVersionCore(tag);
             var current = ParseVersionCore(Assembly.GetEntryAssembly()?.GetName().Version?.ToString());
-            if (latest is null || current is null || latest <= current) return null;
-
-            return new UpdateInfo(tag, url);
+            return ParseRelease(await response.Content.ReadAsStringAsync(ct), current ?? new Version(0, 0, 0));
         }
-        catch
+        catch when (!throwOnError)
         {
             // Offline, rate-limited, or the API shape changed — this is a nice-to-have
             // check, so fail silently rather than bothering the user about it.
             return null;
         }
+    }
+
+    public static UpdateInfo? ParseRelease(string json, Version current)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var release = doc.RootElement;
+        if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean() ||
+            release.TryGetProperty("prerelease", out var prerelease) && prerelease.GetBoolean()) return null;
+        var tag = release.GetProperty("tag_name").GetString();
+        var url = release.GetProperty("html_url").GetString();
+        var latest = ParseVersionCore(tag);
+        var normalizedCurrent = ParseVersionCore(current.ToString());
+        if (latest is null || string.IsNullOrWhiteSpace(url)) throw new InvalidDataException("Invalid release metadata.");
+        if (latest <= normalizedCurrent) return null;
+        string? download = null, checksum = null;
+        if (release.TryGetProperty("assets", out var assets))
+            foreach (var asset in assets.EnumerateArray())
+            {
+                var name = asset.GetProperty("name").GetString();
+                var assetUrl = asset.GetProperty("browser_download_url").GetString();
+                // Only accept assets attached to this exact release in our repository.
+                var prefix = $"https://github.com/blezDev/adbbridge/releases/download/{Uri.EscapeDataString(tag!)}/";
+                if (assetUrl?.StartsWith(prefix, StringComparison.Ordinal) != true) continue;
+                if (name == UpdatePackage.PackageName) download = assetUrl;
+                if (name == "SHA256SUMS.txt") checksum = assetUrl;
+            }
+        return new UpdateInfo(tag!, url!, download, checksum);
     }
 
     /// <summary>Normalizes to Major.Minor.Build only (drops Revision), since a git tag

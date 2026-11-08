@@ -9,9 +9,9 @@
             <DockPanel>
                 <Button x:Name="UpdateDismissButton" Content="Dismiss" DockPanel.Dock="Right" Padding="8,2"
                         Margin="6,0,0,0" Click="UpdateDismissButton_Click"/>
-                <Button x:Name="UpdateDownloadButton" Content="View release" DockPanel.Dock="Right" Padding="8,2"
+                <Button x:Name="UpdateDownloadButton" Content="Update and restart" DockPanel.Dock="Right" Padding="8,2"
                         Click="UpdateDownloadButton_Click"/>
-                <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center" Text="An update is available."/>
+                <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center" TextWrapping="Wrap" Text="An update is available."/>
             </DockPanel>
         </Border>
         <ContentControl x:Name="ViewHost"/>

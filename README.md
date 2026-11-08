@@ -19,8 +19,23 @@ The Companion screen continuously shows two independent, auto-updating facts:
 Tokens are encrypted at rest with Windows DPAPI and never passed as plain command-line
 arguments to ngrok/ssh, and Pinggy's SSH host key is pinned via a real known_hosts file
 instead of disabling verification. On startup the app checks GitHub Releases for a newer
-version and shows a dismissible banner with a link if one exists — it only reads the
-latest release's tag, never downloads or replaces anything automatically.
+version and shows a dismissible **Update and restart** banner when one is available.
+Click it to download and install the update inside the app, without opening a browser.
+
+The updater verifies the release archive against `SHA256SUMS.txt` and checks the
+executable version before stopping the bridge. It replaces the current executable,
+keeps `AdbBridge.exe.previous` as a backup, and restarts in the same Host or Companion
+role. Existing settings are preserved. Host sharing must be started again after
+restart; Companion reconnects if its saved auto-connect setting is enabled.
+Downloads show progress and can be canceled before installation. A failed download or
+checksum check leaves the installed executable untouched. If replacement or launching
+the new executable fails, the installer attempts to restore and relaunch the previous
+version. Run the app from a writable folder; updating a protected installation folder
+requires moving it to a writable location first.
+
+**Upgrading from the original v1.0.2 or earlier:** download the rebuilt v1.0.2 release
+once manually. The old updater opens a browser, and equal version numbers do not
+trigger its update banner. Future newer versions use the in-app installer.
 
 ## Prerequisites
 

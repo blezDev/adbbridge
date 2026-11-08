@@ -8,4 +8,5 @@ namespace AdbBridge.App.Views;
 public interface IBridgeView
 {
     void Cleanup();
+    Task CleanupAsync();
 }

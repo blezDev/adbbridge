@@ -64,6 +64,7 @@ public partial class HostView : UserControl, IBridgeView
     }
 
     public void Cleanup() => _ = StopSharingAsync();
+    public Task CleanupAsync() => StopSharingAsync();
 
     private void BackButton_Click(object sender, RoutedEventArgs e)
     {

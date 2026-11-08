@@ -1,5 +1,25 @@
 # AdbBridge — project context
 
+## In-app updater (rebuilt v1.0.2)
+
+`UpdateChecker` locates the latest stable release's ZIP and SHA256SUMS assets.
+`UpdatePackage` downloads with progress, verifies SHA-256, and extracts only the known
+executable entry. `SelfUpdate` validates its version and starts a copied instance of
+the current single-file executable as an installer. App startup handles `--apply-update`
+before the single-instance guard. The installer acknowledges readiness, waits for the
+parent to exit, atomically replaces the installed binary with a backup, and restarts
+in the saved UI role. It attempts rollback on replacement or process-launch failure.
+The UI awaits bridge cleanup before handing off. Settings files are not replaced.
+
+Original v1.0.2 builds need one manual download because the rebuilt release keeps the
+same version. The updater only offers higher stable version numbers. Every future
+release must continue publishing `AdbBridge-win-x64.zip` and `SHA256SUMS.txt`.
+
+Updater checks: `dotnet run --project tests/AdbBridge.UpdateTests -c Release`.
+For real file replacement, restart and rollback tests using disposable executable
+copies, publish that project with `--self-contained true -r win-x64 -p:PublishSingleFile=true`
+and run its published executable with `--integration`.
+
 ## Native Android Studio mirroring codec override (2026-11-09)
 
 The VP8 failure described below has a Studio-side workaround worth testing before

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using AdbBridge.App.Views;
@@ -13,6 +12,9 @@ public partial class MainWindow : Window
     private TrayIconService? _tray;
     private IBridgeView? _currentView;
     private UpdateInfo? _availableUpdate;
+    private CancellationTokenSource? _updateCancellation;
+    private bool _installingUpdate;
+    private string? _currentRole;
 
     public MainWindow()
     {
@@ -50,7 +52,15 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task CheckForUpdatesAsync(bool interactive)
     {
-        var update = await UpdateChecker.CheckAsync();
+        if (_updateCancellation is not null) return;
+        UpdateInfo? update;
+        try { update = await UpdateChecker.CheckAsync(throwOnError: interactive); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not check for updates: {ex.Message}", "AdbBridge", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (_updateCancellation is not null) return;
 
         if (update is not null)
         {
@@ -68,22 +78,52 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UpdateDownloadButton_Click(object sender, RoutedEventArgs e)
+    private async void UpdateDownloadButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_availableUpdate is null) return;
+        if (_availableUpdate is null || _updateCancellation is not null) return;
+        using var cancellation = new CancellationTokenSource();
+        _updateCancellation = cancellation;
+        UpdateDownloadButton.IsEnabled = false;
+        UpdateDismissButton.Content = "Cancel";
+        ViewHost.IsEnabled = false;
+        UpdateBannerText.Text = "Downloading update...";
         try
         {
-            Process.Start(new ProcessStartInfo(_availableUpdate.ReleaseUrl) { UseShellExecute = true });
+            var progress = new Progress<int>(percent => UpdateBannerText.Text = percent >= 0
+                ? $"Downloading update... {percent}%" : "Downloading update...");
+            var package = await SelfUpdate.PrepareAsync(_availableUpdate, progress, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            _installingUpdate = true;
+            UpdateDismissButton.IsEnabled = false;
+            UpdateBannerText.Text = "Installing update and restarting...";
+            if (_currentView is not null) await _currentView.CleanupAsync();
+            await SelfUpdate.StartHelperAsync(package, _currentRole);
+            _tray?.PrepareForShutdown();
+            Application.Current.Shutdown();
         }
-        catch
+        catch (OperationCanceledException)
         {
-            // Best-effort — if the default browser can't be launched for some reason,
-            // there's nothing more useful to do than leave the banner up.
+            UpdateBannerText.Text = "Update canceled. You can try again.";
+        }
+        catch (Exception ex)
+        {
+            UpdateBannerText.Text = "Update failed. You can try again.";
+            MessageBox.Show(this, ex.Message, "AdbBridge update", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _updateCancellation = null;
+            _installingUpdate = false;
+            UpdateDownloadButton.IsEnabled = true;
+            UpdateDismissButton.IsEnabled = true;
+            UpdateDismissButton.Content = "Dismiss";
+            ViewHost.IsEnabled = true;
         }
     }
 
     private void UpdateDismissButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_updateCancellation is not null) { _updateCancellation.Cancel(); return; }
         UpdateBanner.Visibility = Visibility.Collapsed;
     }
 
@@ -92,12 +132,15 @@ public partial class MainWindow : Window
 
     private void OnExitRequested()
     {
+        if (_installingUpdate) return;
+        _updateCancellation?.Cancel();
         _currentView?.Cleanup();
         Application.Current.Shutdown();
     }
 
     private void ShowSelection()
     {
+        _currentRole = null;
         var view = new SelectionView();
         view.HostChosen += ShowHost;
         view.CompanionChosen += () => ShowCompanion(autoConnect: false);
@@ -108,6 +151,7 @@ public partial class MainWindow : Window
 
     private void ShowHost()
     {
+        _currentRole = "host";
         var view = new HostView();
         view.BackRequested += ShowSelection;
         SetView(view, view);
@@ -116,6 +160,7 @@ public partial class MainWindow : Window
 
     private async void ShowCompanion(bool autoConnect)
     {
+        _currentRole = "companion";
         var view = new CompanionView();
         view.BackRequested += ShowSelection;
         SetView(view, view);
