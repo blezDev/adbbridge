@@ -202,9 +202,9 @@ public partial class CompanionView : UserControl, IBridgeView
             return;
         }
 
-        if (!TunnelInfo.TryParse(_settings.LastTunnelAddress, out var target) || target is null)
+        if (!TunnelInfo.TryParse(_settings.LastTunnelAddress, out var target) || target?.Credentials is null)
         {
-            MessageBox.Show(owner, "Enter a valid address, e.g. 0.tcp.ngrok.io:12345", "AdbBridge Companion",
+            MessageBox.Show(owner, "Paste the complete secure connection code from an updated Host. A plain host:port address is no longer accepted.", "AdbBridge Companion",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }

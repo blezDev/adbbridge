@@ -1,5 +1,24 @@
 # AdbBridge — project context
 
+## v1.0.5 security architecture
+
+All public transport uses `SecureTunnel` mutual TLS with exact certificate pins and no
+plaintext downgrade. Host stores its `BridgeIdentity` with DPAPI; Companion saves the
+private `adbbridge://` connection code with DPAPI. Update both PCs and pair again.
+`ForwardBroker` permits only successful ADB-registered forward/reverse ports, tracks
+active streams independently of mappings, and listens on loopback, as does Host ADB.
+Host's Reset pairing stops sharing and clears the stored identity to revoke old codes.
+Provider tokens never go in argv: ngrok uses NGROK_AUTHTOKEN; Pinggy uses a private SSH
+config. Avoid raw provider/ADB payload logs. Update/extraction paths reject links,
+actual extracted sizes are capped, and the installer hashes copied bytes after parent
+exit. See SECURITY.md for scope, residual trust, and validation commands.
+
+The user confirmed native Android Studio mirroring and App Inspection work on v1.0.4;
+Studio mirroring is slower than scrcpy. Historical unresolved-device notes below are
+superseded by that confirmation. The v1.0.5 TLS transport has loopback regression
+coverage; do not claim a new live two-PC phone test without running one.
+
+
 ## Confirmed mirroring stream-lifetime bug and fix
 
 Live scrcpy tests against the Infinix showed disconnects exactly when scrcpy removed

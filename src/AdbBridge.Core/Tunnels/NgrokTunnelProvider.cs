@@ -34,43 +34,14 @@ public sealed class NgrokTunnelProvider : ITunnelProvider
         _apiPort = apiPort;
     }
 
-    public async Task StartAsync(CancellationToken ct = default)
+    public Task StartAsync(CancellationToken ct = default)
     {
         if (!File.Exists(_ngrokExePath))
             throw new FileNotFoundException($"ngrok.exe not found at '{_ngrokExePath}'.", _ngrokExePath);
 
-        // Writes the token to ngrok's own config file once (~/.ngrok2/ngrok.yml or the
-        // v3 equivalent) instead of passing --authtoken on every launch. A command-line
-        // argument is visible to any other local process/account via tools as basic as
-        // `tasklist -v` or `wmic process get CommandLine` for as long as ngrok is
-        // running; the config file is only readable by this Windows account.
-        await RunAddAuthTokenAsync(ct);
-
         _monitorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _monitorTask = MonitorLoopAsync(_monitorCts.Token);
-    }
-
-    private async Task RunAddAuthTokenAsync(CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = _ngrokExePath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add("config");
-        psi.ArgumentList.Add("add-authtoken");
-        psi.ArgumentList.Add(_authToken);
-
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start ngrok.exe to save the authtoken.");
-        await process.WaitForExitAsync(ct);
-        if (process.ExitCode != 0)
-        {
-            var stderr = await process.StandardError.ReadToEndAsync(ct);
-            throw new InvalidOperationException($"ngrok rejected the authtoken: {stderr.Trim()}");
-        }
+        return Task.CompletedTask;
     }
 
     private async Task MonitorLoopAsync(CancellationToken ct)
@@ -122,10 +93,8 @@ public sealed class NgrokTunnelProvider : ITunnelProvider
         }
     }
 
-    private void LaunchProcess()
+    private ProcessStartInfo BuildStartInfo()
     {
-        KillStrayNgrok();
-
         var psi = new ProcessStartInfo
         {
             FileName = _ngrokExePath,
@@ -134,26 +103,24 @@ public sealed class NgrokTunnelProvider : ITunnelProvider
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        // The authtoken was already saved to ngrok's own config via `config
-        // add-authtoken` in StartAsync, so it doesn't need to appear here.
+        // The child environment avoids exposing tokens through command-line inspection
+        // and does not write a persistent plaintext ngrok configuration.
+        psi.Environment["NGROK_AUTHTOKEN"] = _authToken;
         psi.ArgumentList.Add("tcp");
         psi.ArgumentList.Add(_localPort.ToString());
         psi.ArgumentList.Add("--log=stdout");
+        return psi;
+    }
 
+    private void LaunchProcess()
+    {
+        var psi = BuildStartInfo();
         _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _process.OutputDataReceived += (_, e) => { if (e.Data is not null) Log($"[ngrok] {e.Data}"); };
         _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) Log($"[ngrok] {e.Data}"); };
         _process.Start();
         _process.BeginOutputReadLine();
         _process.BeginErrorReadLine();
-    }
-
-    private static void KillStrayNgrok()
-    {
-        foreach (var p in Process.GetProcessesByName("ngrok"))
-        {
-            try { p.Kill(true); } catch { /* already gone */ }
-        }
     }
 
     private async Task<TunnelInfo?> WaitForAddressAsync(CancellationToken ct)
@@ -198,7 +165,6 @@ public sealed class NgrokTunnelProvider : ITunnelProvider
             try { _process.Kill(true); } catch { /* already gone */ }
         }
 
-        KillStrayNgrok();
         Current = null;
 
         if (_monitorTask is not null)
@@ -214,5 +180,6 @@ public sealed class NgrokTunnelProvider : ITunnelProvider
         _monitorCts?.Dispose();
     }
 
-    private void Log(string message) => LogMessage?.Invoke(this, message);
+    private void Log(string message) => LogMessage?.Invoke(this,
+        string.IsNullOrEmpty(_authToken) ? message : message.Replace(_authToken, "[redacted]", StringComparison.Ordinal));
 }

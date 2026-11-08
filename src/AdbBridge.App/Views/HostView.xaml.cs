@@ -28,6 +28,7 @@ public partial class HostView : UserControl, IBridgeView
 
     private ITunnelProvider? _tunnel;
     private ForwardBroker? _broker;
+    private AdbBridge.Core.Security.BridgeIdentity? _identity;
     private bool _isSharing;
     private const string RunKeyName = "AdbBridgeHost";
 
@@ -141,6 +142,7 @@ public partial class HostView : UserControl, IBridgeView
         }
 
         StartStopButton.IsEnabled = false;
+        ResetPairingButton.IsEnabled = false;
         StartStopButton.Content = "Starting sharing...";
         SharingProgress.Visibility = Visibility.Visible;
         BackButton.IsEnabled = false;
@@ -148,7 +150,8 @@ public partial class HostView : UserControl, IBridgeView
         {
             _adb.StartNodaemonServer(_settings.PlatformToolsPath);
 
-            _broker = new ForwardBroker();
+            _identity = _settings.OpenIdentity();
+            _broker = new ForwardBroker(identity: _identity);
             _broker.LogMessage += (_, msg) => _log.Append(msg);
             await _broker.StartAsync();
 
@@ -156,7 +159,12 @@ public partial class HostView : UserControl, IBridgeView
             _tunnel.LogMessage += (_, msg) => _log.Append(msg);
             _tunnel.AddressChanged += (_, info) =>
             {
-                Dispatcher.Invoke(() => { PublicAddressBox.Text = info.ToString(); CopyAddressButton.IsEnabled = true; });
+                Dispatcher.Invoke(() =>
+                {
+                    if (_broker is null) return;
+                    PublicAddressBox.Text = _broker.SecureAddress(info).ConnectionCode;
+                    CopyAddressButton.IsEnabled = true;
+                });
             };
             await _tunnel.StartAsync();
 
@@ -169,6 +177,7 @@ public partial class HostView : UserControl, IBridgeView
         finally
         {
             StartStopButton.IsEnabled = true;
+            ResetPairingButton.IsEnabled = true;
             StartStopButton.Content = _isSharing ? "Stop sharing" : "Start sharing";
             SharingProgress.Visibility = Visibility.Collapsed;
             BackButton.IsEnabled = true;
@@ -192,6 +201,8 @@ public partial class HostView : UserControl, IBridgeView
             await _broker.DisposeAsync();
             _broker = null;
         }
+        _identity?.Dispose();
+        _identity = null;
         _adb.StopServer();
 
         _isSharing = false;
@@ -206,6 +217,22 @@ public partial class HostView : UserControl, IBridgeView
         });
         _log.Append("Sharing stopped.");
         RefreshStatusText();
+    }
+
+    private async void ResetPairingButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show(Window.GetWindow(this), "This disconnects all Companions and invalidates every previously shared connection code. Start sharing again and copy the new code to each trusted PC.", "Reset pairing?", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        ResetPairingButton.IsEnabled = false;
+        StartStopButton.IsEnabled = false;
+        try
+        {
+            await StopSharingAsync();
+            _settings.BridgeIdentityProtected = string.Empty;
+            _settings.Save();
+            _log.Append("Pairing reset. Start sharing to generate a new private connection code.");
+        }
+        catch (Exception ex) { MessageBox.Show(Window.GetWindow(this), ex.Message, "Could not reset pairing", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally { ResetPairingButton.IsEnabled = true; StartStopButton.IsEnabled = true; }
     }
 
     private void RefreshStatusText()
@@ -238,10 +265,10 @@ public partial class HostView : UserControl, IBridgeView
         if (PublicAddressBox.Text is { Length: > 0 } text && text != "(not connected)")
         {
             Clipboard.SetText(text);
-            _log.Append("Address copied to clipboard.");
-            CopyAddressButton.Content = "✓  Address copied";
+            _log.Append("Private connection code copied to clipboard.");
+            CopyAddressButton.Content = "✓  Connection code copied";
             await Task.Delay(1800);
-            CopyAddressButton.Content = "Copy sharing address";
+            CopyAddressButton.Content = "Copy connection code";
         }
     }
 

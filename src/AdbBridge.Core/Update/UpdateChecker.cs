@@ -52,13 +52,15 @@ public static class UpdateChecker
                 var name = asset.GetProperty("name").GetString();
                 var assetUrl = asset.GetProperty("browser_download_url").GetString();
                 // Only accept assets attached to this exact release in our repository.
-                var prefix = $"https://github.com/blezDev/adbbridge/releases/download/{Uri.EscapeDataString(tag!)}/";
-                if (assetUrl?.StartsWith(prefix, StringComparison.Ordinal) != true) continue;
+                if (name is null || !IsAssetUrl(assetUrl, tag!, name)) continue;
                 if (name == UpdatePackage.PackageName) download = assetUrl;
                 if (name == "SHA256SUMS.txt") checksum = assetUrl;
             }
         return new UpdateInfo(tag!, url!, download, checksum);
     }
+
+    public static bool IsAssetUrl(string? url, string tag, string name) =>
+        string.Equals(url, $"https://github.com/blezDev/adbbridge/releases/download/{Uri.EscapeDataString(tag)}/{Uri.EscapeDataString(name)}", StringComparison.Ordinal);
 
     /// <summary>Normalizes to Major.Minor.Build only (drops Revision), since a git tag
     /// like "v1.0.2" parses with an unset (-1) fourth component that would otherwise

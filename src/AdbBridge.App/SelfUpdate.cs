@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using AdbBridge.Core.Update;
+using AdbBridge.Core.Security;
 
 namespace AdbBridge.App;
 
@@ -15,6 +16,7 @@ internal static class SelfUpdate
     public static async Task<string> PrepareAsync(UpdateInfo update, IProgress<int> progress, CancellationToken ct)
     {
         var target = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the running application.");
+        SafeArchive.RejectLinks(target);
         if (File.Exists(Path.Combine(AppContext.BaseDirectory, "AdbBridge.dll")))
             throw new InvalidOperationException("In-app updating requires the single-file release build. Download and run the published AdbBridge.exe.");
         // Fail before downloading or disconnecting if this portable installation isn't writable.
@@ -27,6 +29,7 @@ internal static class SelfUpdate
         finally { if (File.Exists(probe)) File.Delete(probe); }
 
         var staging = Path.Combine(UpdateRoot, Guid.NewGuid().ToString("N"));
+        PrivateFiles.EnsureDirectory(UpdateRoot);
         try
         {
             var package = await UpdatePackage.DownloadAsync(update, staging, progress, ct);
@@ -71,12 +74,15 @@ internal static class SelfUpdate
     public static async Task ApplyAsync(string manifestPath)
     {
         var staging = Path.GetDirectoryName(Path.GetFullPath(manifestPath))!;
+        SafeArchive.RejectLinks(manifestPath);
         var root = Path.GetFullPath(UpdateRoot) + Path.DirectorySeparatorChar;
         if (!staging.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Environment.ProcessPath, Path.Combine(staging, "AdbBridge.Updater.exe"), StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Invalid updater staging location.");
         var handoff = JsonSerializer.Deserialize<UpdateHandoff>(await File.ReadAllTextAsync(manifestPath))
             ?? throw new InvalidDataException("Invalid update handoff.");
+        SafeArchive.RejectLinks(handoff.Package);
+        SafeArchive.RejectLinks(handoff.Target);
         if (!string.Equals(handoff.Package, Path.Combine(staging, "AdbBridge.new.exe"), StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(await UpdatePackage.HashAsync(handoff.Package), handoff.Hash, StringComparison.OrdinalIgnoreCase) ||
             handoff.Role is not (null or "host" or "companion"))
@@ -93,7 +99,18 @@ internal static class SelfUpdate
         var replaced = false;
         try
         {
-            File.Copy(handoff.Package, pending);
+            // Recheck the exact locked bytes copied after the parent exits. The
+            // staged package may have changed since the initial readiness check.
+            await using var source = new FileStream(handoff.Package, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using var pendingFile = new FileStream(pending, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete);
+            await source.CopyToAsync(pendingFile);
+            await pendingFile.FlushAsync();
+            pendingFile.Position = 0;
+            var copiedHash = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(pendingFile));
+            if (!string.Equals(copiedHash, handoff.Hash, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The staged executable changed before installation. Update rejected.");
+            await pendingFile.DisposeAsync(); // ReplaceFile on Windows requires the source handle closed.
+            SafeArchive.RejectLinks(backup);
             // Atomic replacement on the installation volume, retaining the previous binary.
             for (var attempt = 0; ; attempt++)
             {

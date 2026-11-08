@@ -6,6 +6,21 @@ namespace AdbBridge.Core.Config;
 
 public sealed class HostSettings
 {
+    public string BridgeIdentityProtected { get; set; } = string.Empty;
+
+    public AdbBridge.Core.Security.BridgeIdentity OpenIdentity()
+    {
+        if (!string.IsNullOrEmpty(BridgeIdentityProtected))
+        {
+            var data = SecretProtector.Unprotect(BridgeIdentityProtected);
+            if (string.IsNullOrEmpty(data)) throw new InvalidDataException("Cannot unlock this Host's pairing identity. Restore its settings or clear its pairing identity to pair again.");
+            return AdbBridge.Core.Security.BridgeIdentity.FromExport(data);
+        }
+        var identity = AdbBridge.Core.Security.BridgeIdentity.Create();
+        BridgeIdentityProtected = SecretProtector.Protect(identity.Export());
+        Save();
+        return identity;
+    }
     public string PlatformToolsPath { get; set; } = string.Empty;
     public TunnelProviderKind Provider { get; set; } = TunnelProviderKind.Ngrok;
 
@@ -60,7 +75,9 @@ public sealed class CompanionSettings
 {
     public string ScrcpyExePath { get; set; } = string.Empty;
     public string PlatformToolsPath { get; set; } = string.Empty;
+    [JsonIgnore]
     public string LastTunnelAddress { get; set; } = string.Empty;
+    public string LastTunnelAddressProtected { get; set; } = string.Empty;
     public bool RunAtStartup { get; set; }
     public bool AutoConnectOnStartup { get; set; }
 
@@ -71,6 +88,7 @@ public sealed class CompanionSettings
     {
         var isFirstRun = !File.Exists(FilePath);
         var settings = SettingsFileExtensions.Load<CompanionSettings>(FilePath);
+        settings.LastTunnelAddress = SecretProtector.Unprotect(settings.LastTunnelAddressProtected);
 
         if (isFirstRun && settings.PlatformToolsPath.Length == 0)
             settings.PlatformToolsPath = PathDetector.FindAdb();
@@ -78,7 +96,11 @@ public sealed class CompanionSettings
         return settings;
     }
 
-    public void Save() => SettingsFileExtensions.Save(this, FilePath);
+    public void Save()
+    {
+        LastTunnelAddressProtected = SecretProtector.Protect(LastTunnelAddress);
+        SettingsFileExtensions.Save(this, FilePath);
+    }
 }
 
 internal static class SettingsFileExtensions
@@ -105,9 +127,16 @@ internal static class SettingsFileExtensions
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
+            AdbBridge.Core.Security.PrivateFiles.EnsureDirectory(dir);
 
         var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(path, json);
+        AdbBridge.Core.Security.SafeArchive.RejectLinks(path);
+        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temporary, json);
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }

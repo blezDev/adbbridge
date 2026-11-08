@@ -16,7 +16,7 @@ if (args.FirstOrDefault() == "--test-helper")
 if (args.FirstOrDefault() == "--test-parent")
 {
     await File.WriteAllTextAsync(Path.Combine(args[1], "parent-started"), "started");
-    for (var i = 0; i < 300 && !File.Exists(Path.Combine(args[1], "ready")); i++) await Task.Delay(100);
+    for (var i = 0; i < 300 && (!File.Exists(Path.Combine(args[1], "ready")) || File.Exists(Path.Combine(args[1], "hold-parent"))); i++) await Task.Delay(100);
     return;
 }
 if (Path.GetFileName(Environment.ProcessPath) == "AdbBridge.exe")
@@ -33,7 +33,7 @@ static void Reject(Action action, string message)
 }
 static Process Start(string exe, params string[] arguments)
 {
-    var start = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true };
+    var start = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
     foreach (var argument in arguments) start.ArgumentList.Add(argument);
     return Process.Start(start) ?? throw new Exception("Could not start updater test process.");
 }
@@ -80,6 +80,13 @@ try
             throw new Exception("Corrupt download accepted.");
         }
         catch (InvalidDataException) { Check(!File.Exists(Path.Combine(corruptStage, "AdbBridge.new.exe")), "Corrupt binary extracted."); }
+        using var oversizedMetadata = new HttpClient(new FakeRelease(bytes, new string('a', 16385)));
+        try
+        {
+            await UpdatePackage.DownloadAsync(new("v9.0.0", "", prefix + UpdatePackage.PackageName, prefix + "SHA256SUMS.txt"), Path.Combine(scratch, Guid.NewGuid().ToString("N")), client: oversizedMetadata);
+            throw new Exception("Oversized checksum metadata accepted.");
+        }
+        catch (InvalidDataException) { }
         using var cancel = new CancellationTokenSource();
         cancel.Cancel();
         try
@@ -105,8 +112,10 @@ if (args.Contains("--integration"))
 {
     var actualHelperIndex = Array.IndexOf(args, "--actual-helper");
     var actualHelper = actualHelperIndex >= 0 ? Path.GetFullPath(args[actualHelperIndex + 1]) : null;
-    foreach (var failRestart in actualHelper is null ? new[] { false, true } : new[] { false })
+    foreach (var scenario in actualHelper is null ? new[] { "success", "rollback", "tamper" } : new[] { "success" })
     {
+        var failRestart = scenario == "rollback";
+        var tamper = scenario == "tamper";
         var staging = Path.Combine(SelfUpdate.UpdateRoot, "test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(staging, "install"));
         var target = Path.Combine(staging, "install", "AdbBridge.exe");
@@ -117,6 +126,7 @@ if (args.Contains("--integration"))
         if (failRestart) await File.WriteAllTextAsync(package, "MZnot-a-real-executable");
         else File.Copy(Environment.ProcessPath!, package);
         var originalHash = await UpdatePackage.HashAsync(target);
+        if (tamper) await File.WriteAllTextAsync(Path.Combine(staging, "hold-parent"), "hold");
         using var parent = Start(target, "--test-parent", staging);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         try
@@ -125,12 +135,19 @@ if (args.Contains("--integration"))
             var manifest = Path.Combine(staging, "handoff.json");
             await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new UpdateHandoff(parent.Id, target, package, await UpdatePackage.HashAsync(package), null)));
             using var installer = Start(helper, actualHelper is null ? "--test-helper" : "--apply-update", manifest);
+            if (tamper)
+            {
+                while (!File.Exists(Path.Combine(staging, "ready"))) await Task.Delay(100, timeout.Token);
+                await File.WriteAllTextAsync(package, "MZmodified-after-verification");
+                File.Delete(Path.Combine(staging, "hold-parent"));
+            }
             await installer.WaitForExitAsync(timeout.Token);
-            Check(installer.ExitCode == (failRestart ? 1 : 0), "Unexpected installer result.");
+            if (installer.ExitCode != (failRestart || tamper ? 1 : 0)) Console.WriteLine(await installer.StandardError.ReadToEndAsync());
+            Check(installer.ExitCode == (failRestart || tamper ? 1 : 0), "Unexpected installer result.");
             while (!File.Exists(Path.Combine(staging, "install", "restarted"))) await Task.Delay(100, timeout.Token);
             Check(await UpdatePackage.HashAsync(target) == originalHash, "Installed or restored executable differs.");
-            Check(File.Exists(target + ".previous"), "Backup missing.");
-            Console.WriteLine(failRestart ? "Installer rollback and restart passed." : "Installer replacement and restart passed.");
+            Check(File.Exists(target + ".previous") == !tamper, "Unexpected backup state.");
+            Console.WriteLine(tamper ? "Installer rejected staged-package tampering and restarted the original." : failRestart ? "Installer rollback and restart passed." : "Installer replacement and restart passed.");
         }
         finally
         {

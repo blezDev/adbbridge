@@ -16,10 +16,10 @@
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Text="Connect to Host" Style="{StaticResource SectionTitle}"/>
-                            <TextBlock Text="Copy the sharing address from your Host PC and paste it below." Style="{StaticResource Hint}" Margin="0,8,0,22"/>
-                            <TextBlock Text="Host address" Style="{StaticResource FieldLabel}"/>
-                            <TextBox x:Name="AddressBox" FontFamily="Consolas" ToolTip="Example: your-host.a.pinggy.link:12345" KeyDown="AddressBox_KeyDown" AutomationProperties.Name="Host tunnel address"/>
-                            <TextBlock Text="hostname:port" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,16"/>
+                            <TextBlock Text="Copy the private connection code from your updated Host PC and paste it below." Style="{StaticResource Hint}" Margin="0,8,0,22"/>
+                            <TextBlock Text="Secure connection code" Style="{StaticResource FieldLabel}"/>
+                            <TextBox x:Name="AddressBox" FontFamily="Consolas" MaxLength="32768" ToolTip="Paste the complete adbbridge:// connection code from Host." KeyDown="AddressBox_KeyDown" AutomationProperties.Name="Secure Host connection code"/>
+                            <TextBlock Text="Encrypted connection · paired PCs only" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,16"/>
                             <Button x:Name="ConnectButton" Content="Connect to Host" Style="{StaticResource PrimaryButton}" Click="ConnectButton_Click"/>
                             <ProgressBar x:Name="ConnectionProgress" IsIndeterminate="True" Height="3" Margin="0,10,0,0" Visibility="Collapsed" Foreground="{StaticResource AccentBrush}"/>
                             <Expander x:Name="AdbSettingsExpander" Header="Android SDK settings" Margin="0,18,0,0">

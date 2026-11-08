@@ -8,6 +8,7 @@ using AdbBridge.Core.Adb;
 using AdbBridge.Core.Config;
 using AdbBridge.Core.Mirroring;
 using AdbBridge.Core.Relay;
+using AdbBridge.Core.Security;
 using AdbBridge.Core.Tunnels;
 
 static int FreePort()
@@ -18,19 +19,20 @@ static int FreePort()
     listener.Stop();
     return port;
 }
-static async Task Exchange(TcpClient from, TcpClient to, string message, CancellationToken ct)
+static Stream StreamOf(object connection) => connection is TcpClient client ? client.GetStream() : (Stream)connection;
+static async Task Exchange(object from, object to, string message, CancellationToken ct)
 {
     var bytes = Encoding.ASCII.GetBytes(message);
-    await from.GetStream().WriteAsync(bytes, ct);
+    await StreamOf(from).WriteAsync(bytes, ct);
     var actual = new byte[bytes.Length];
-    await to.GetStream().ReadExactlyAsync(actual, ct);
+    await StreamOf(to).ReadExactlyAsync(actual, ct);
     if (!actual.SequenceEqual(bytes)) throw new Exception("Stream bytes changed.");
 }
-static async Task Closed(TcpClient client, CancellationToken ct)
+static async Task Closed(object client, CancellationToken ct)
 {
     try
     {
-        if (await client.GetStream().ReadAsync(new byte[1], ct) != 0) throw new Exception("Expected closed stream.");
+        if (await StreamOf(client).ReadAsync(new byte[1], ct) != 0) throw new Exception("Expected closed stream.");
     }
     catch (IOException) { }
 }
@@ -59,7 +61,7 @@ foreach (var clearAll in new[] { false, true })
     var ct = timeout.Token;
     await using var gateway = new FakeGateway();
     await using var relay = new TcpRelay(new AdbProcessManager(), 0);
-    relay.UpdateTarget(new TunnelInfo("127.0.0.1", gateway.Port));
+    relay.UpdateTarget(gateway.Target);
     await relay.StartAsync(ct);
     var forward = new ForwardPortRelay(relay);
     try
@@ -96,7 +98,7 @@ foreach (var clearAll in new[] { false, true })
     var ct = timeout.Token;
     await using var gateway = new FakeGateway();
     await using var relay = new TcpRelay(new AdbProcessManager(), 0);
-    relay.UpdateTarget(new TunnelInfo("127.0.0.1", gateway.Port));
+    relay.UpdateTarget(gateway.Target);
     await relay.StartAsync(ct);
     var reverse = new ReversePoolRelay(relay);
     var appListener = new TcpListener(IPAddress.Loopback, 0);
@@ -106,7 +108,7 @@ foreach (var clearAll in new[] { false, true })
         var port = ((IPEndPoint)appListener.LocalEndpoint).Port;
         await Command(relay.LocalPort, $"reverse:forward:localabstract:video;tcp:{port}", true, ct);
         using var device = await gateway.Reverses.Reader.ReadAsync(ct);
-        await device.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
+        await device.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
         using var app = await appListener.AcceptTcpClientAsync(ct);
         using var idle = await gateway.Reverses.Reader.ReadAsync(ct);
         await Exchange(device, app, "before", ct);
@@ -127,7 +129,7 @@ foreach (var clearAll in new[] { false, true })
     var ct = timeout.Token;
     await using var gateway = new FakeGateway();
     await using var relay = new TcpRelay(new AdbProcessManager(), 0);
-    relay.UpdateTarget(new TunnelInfo("127.0.0.1", gateway.Port));
+    relay.UpdateTarget(gateway.Target);
     await relay.StartAsync(ct);
     await using var reverse = new ReversePoolRelay(relay);
     var appListener = new TcpListener(IPAddress.Loopback, 0);
@@ -137,7 +139,7 @@ foreach (var clearAll in new[] { false, true })
         var port = ((IPEndPoint)appListener.LocalEndpoint).Port;
         await Command(relay.LocalPort, $"reverse:forward:localabstract:ordered;tcp:{port}", true, ct);
         using var video = await gateway.Reverses.Reader.ReadAsync(ct);
-        TcpClient? control = null;
+        Stream? control = null;
         using (var reorder = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
             reorder.CancelAfter(100);
@@ -145,19 +147,19 @@ foreach (var clearAll in new[] { false, true })
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
         }
         if (control is not null)
-            await control.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
-        await video.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
+            await control.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
+        await video.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
         using var firstApp = await appListener.AcceptTcpClientAsync(ct);
         if (control is null)
         {
             control = await gateway.Reverses.Reader.ReadAsync(ct);
-            await control.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
+            await control.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
         }
         using (control)
         using (var secondApp = await appListener.AcceptTcpClientAsync(ct))
         {
-            await video.GetStream().WriteAsync(new byte[] { (byte)'V' }, ct);
-            await control.GetStream().WriteAsync(new byte[] { (byte)'C' }, ct);
+            await video.WriteAsync(new byte[] { (byte)'V' }, ct);
+            await control.WriteAsync(new byte[] { (byte)'C' }, ct);
             var first = new byte[1];
             var second = new byte[1];
             await firstApp.GetStream().ReadExactlyAsync(first, ct);
@@ -224,9 +226,11 @@ sealed class FakeGateway : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentBag<Task> _tasks = new();
     private readonly Task _accept;
-    public readonly Channel<TcpClient> Forwards = Channel.CreateUnbounded<TcpClient>();
-    public readonly Channel<TcpClient> Reverses = Channel.CreateUnbounded<TcpClient>();
+    private readonly BridgeIdentity _identity = BridgeIdentity.Create();
+    public readonly Channel<Stream> Forwards = Channel.CreateUnbounded<Stream>();
+    public readonly Channel<Stream> Reverses = Channel.CreateUnbounded<Stream>();
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+    public TunnelInfo Target => new("127.0.0.1", Port) { Credentials = _identity.Credentials };
     public FakeGateway() { _listener.Start(); _accept = AcceptAsync(); }
     private async Task AcceptAsync()
     {
@@ -239,14 +243,14 @@ sealed class FakeGateway : IAsyncDisposable
         {
             try
             {
-                var stream = client.GetStream();
+                await using var stream = await SecureTunnel.AcceptAsync(client.GetStream(), _identity, _cts.Token);
                 var first = new byte[1];
                 await stream.ReadExactlyAsync(first, _cts.Token);
                 if (first[0] is (byte)'F' or (byte)'R')
                 {
                     var kind = first[0];
                     while (first[0] != '\n') await stream.ReadExactlyAsync(first, _cts.Token);
-                    await (kind == 'F' ? Forwards : Reverses).Writer.WriteAsync(client, _cts.Token);
+                    await (kind == 'F' ? Forwards : Reverses).Writer.WriteAsync(stream, _cts.Token);
                     await Task.Delay(Timeout.Infinite, _cts.Token);
                     return;
                 }
@@ -277,5 +281,6 @@ sealed class FakeGateway : IAsyncDisposable
         await _accept;
         await Task.WhenAll(_tasks);
         _cts.Dispose();
+        _identity.Dispose();
     }
 }

@@ -2,55 +2,45 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
+using AdbBridge.Core.Security;
+using AdbBridge.Core.Tunnels;
 
 namespace AdbBridge.Core.Relay;
 
-/// <summary>
-/// Host-side counterpart to <see cref="ForwardPortRelay"/> and <see cref="ReversePoolRelay"/>.
-/// Sits between the tunnel (ngrok/Pinggy) and the real local adb server, so the tunnel's
-/// single public address can reach any of three things depending on what the Companion is
-/// asking for:
-///
-/// - Normal traffic (the adb host protocol itself) is passed straight through to the
-///   real adb server on its own port, exactly as if the tunnel pointed at it directly —
-///   this is what already worked before this class existed.
-/// - A connection that opens with the marker line "FWD:&lt;port&gt;\n" is instead routed
-///   to 127.0.0.1:&lt;port&gt; on this machine — the listener that the real adb server just
-///   opened here in response to an `adb forward tcp:0 ...` request (see
-///   <see cref="ForwardPortRelay"/>).
-/// - A connection that opens with "REV:&lt;port&gt;\n" is an idle, pre-opened tunnel
-///   connection from Companion's reverse pool (see <see cref="ReversePoolRelay"/>). This
-///   broker binds a stand-in listener on 127.0.0.1:&lt;port&gt; itself — the port the real
-///   adb server will try to dial when the device opens a reverse-forwarded connection —
-///   and pairs whichever arrives first with one of these pooled connections, writing
-///   "GO\n" to signal Companion to start bridging to Studio's real listener.
-///
-/// The markers are unambiguous with zero lookahead: real adb frames always begin with a
-/// lowercase-hex length nibble ('0'-'9'/'a'-'f'), and 'F'/'R' are neither, so peeking one
-/// byte is enough to tell all three apart.
-/// </summary>
+/// <summary>Authenticated Host gateway for ADB and broker-managed forwarding ports.</summary>
 public sealed class ForwardBroker : IAsyncDisposable
 {
     public const int DefaultPort = 5099;
-    private const int MaxMarkerLine = 32;
-    private static readonly TimeSpan ReversePairTimeout = TimeSpan.FromSeconds(5);
-
     private readonly int _brokerPort;
     private readonly int _adbServerPort;
+    private readonly BridgeIdentity _identity;
+    private readonly bool _ownsIdentity;
+    private readonly RelayConnections _connections = new();
+    private readonly SemaphoreSlim _slots = new(128, 128);
+    private readonly object _gate = new();
+    private readonly HashSet<int> _forwardPorts = new();
+    private readonly Dictionary<string, int> _reverseMappings = new();
+    private readonly Dictionary<int, TcpListener> _reverseListeners = new();
+    private readonly Dictionary<int, Channel<BrokerConnection>> _reversePools = new();
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
-    private Task? _acceptLoopTask;
+    private Task? _acceptLoop;
 
-    private readonly object _reverseGate = new();
-    private readonly Dictionary<int, TcpListener> _reverseListeners = new();
-    private readonly Dictionary<int, Channel<TcpClient>> _reversePools = new();
+    private sealed record BrokerConnection(TcpClient Client, Stream Stream) : IDisposable
+    {
+        public void Dispose() { Stream.Dispose(); Client.Dispose(); }
+    }
 
     public event EventHandler<string>? LogMessage;
+    public int LocalPort => (_listener?.LocalEndpoint as IPEndPoint)?.Port ?? _brokerPort;
+    public TunnelInfo SecureAddress(TunnelInfo endpoint) => endpoint with { Credentials = _identity.Credentials };
 
-    public ForwardBroker(int brokerPort = DefaultPort, int adbServerPort = 5037)
+    public ForwardBroker(int brokerPort = DefaultPort, int adbServerPort = 5037, BridgeIdentity? identity = null)
     {
         _brokerPort = brokerPort;
         _adbServerPort = adbServerPort;
+        _identity = identity ?? BridgeIdentity.Create();
+        _ownsIdentity = identity is null;
     }
 
     public Task StartAsync(CancellationToken ct = default)
@@ -58,246 +48,190 @@ public sealed class ForwardBroker : IAsyncDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _listener = new TcpListener(IPAddress.Loopback, _brokerPort);
         _listener.Start();
-        Log($"Forward broker listening on 127.0.0.1:{_brokerPort} (adb server on {_adbServerPort}).");
-
-        _acceptLoopTask = AcceptLoopAsync(_cts.Token);
+        Log($"Authenticated TLS broker listening on 127.0.0.1:{LocalPort}.");
+        _acceptLoop = AcceptAsync(_cts.Token);
         return Task.CompletedTask;
     }
 
-    private async Task AcceptLoopAsync(CancellationToken ct)
-    {
-        if (_listener is null) return;
-
-        while (!ct.IsCancellationRequested)
-        {
-            TcpClient client;
-            try
-            {
-                client = await _listener.AcceptTcpClientAsync(ct);
-            }
-            catch (OperationCanceledException) { break; }
-            catch (ObjectDisposedException) { break; }
-
-            _ = HandleClientAsync(client, ct);
-        }
-    }
-
-    private async Task HandleClientAsync(TcpClient inbound, CancellationToken ct)
+    private async Task AcceptAsync(CancellationToken ct)
     {
         try
         {
-            var stream = inbound.GetStream();
+            while (!ct.IsCancellationRequested)
+            {
+                var client = await _listener!.AcceptTcpClientAsync(ct);
+                if (!_slots.Wait(0)) { client.Dispose(); continue; }
+                _connections.Start(token => HandleAsync(client, token), () => { client.Dispose(); _slots.Release(); });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (ct.IsCancellationRequested) { }
+    }
+
+    private async Task HandleAsync(TcpClient client, CancellationToken ct)
+    {
+        Stream? stream = null;
+        var queued = false;
+        try
+        {
+            stream = await SecureTunnel.AcceptAsync(client.GetStream(), _identity, ct);
+            using var header = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            header.CancelAfter(TimeSpan.FromSeconds(10));
             var first = new byte[1];
-            var read = await stream.ReadAsync(first, ct);
-            if (read <= 0) { inbound.Dispose(); return; }
-
-            if (first[0] == (byte)'F')
+            await stream.ReadExactlyAsync(first, header.Token);
+            if (first[0] is (byte)'F' or (byte)'R')
             {
-                using var _ = inbound;
-                await HandleForwardMarkerAsync(stream, first[0], ct);
+                var kind = first[0];
+                var bytes = new List<byte> { kind };
+                while (bytes.Count < 32 && bytes[^1] != '\n')
+                {
+                    await stream.ReadExactlyAsync(first, header.Token);
+                    bytes.Add(first[0]);
+                }
+                var marker = Encoding.ASCII.GetString(bytes.ToArray());
+                var prefix = kind == 'F' ? "FWD:" : "REV:";
+                if (bytes[^1] != '\n' || !marker.StartsWith(prefix, StringComparison.Ordinal) ||
+                    !int.TryParse(marker[prefix.Length..].Trim(), out var port) || port is <= 0 or > 65535)
+                    throw new InvalidDataException("Invalid broker marker.");
+                if (kind == 'F')
+                {
+                    lock (_gate) if (!_forwardPorts.Contains(port)) throw new InvalidDataException("Forward port is not registered by ADB.");
+                    await RelayForwardAsync(stream, port, ct);
+                }
+                else
+                {
+                    lock (_gate)
+                    {
+                        if (!_reverseMappings.ContainsValue(port)) throw new InvalidDataException("Reverse port is not registered by ADB.");
+                        EnsureReverseListener(port);
+                        queued = _reversePools[port].Writer.TryWrite(new BrokerConnection(client, stream));
+                    }
+                }
             }
-            else if (first[0] == (byte)'R')
-            {
-                // Ownership of `inbound` transfers into the reverse pool from here — it
-                // must NOT be disposed on this path. It's disposed later, whenever a
-                // reverse-connect actually consumes it (or the broker shuts down).
-                await HandleReverseMarkerAsync(inbound, stream, first[0], ct);
-            }
-            else
-            {
-                using var _ = inbound;
-                await RelayToAsync(stream, _adbServerPort, first, ct);
-            }
+            else await RelayAdbAsync(stream, first, ct);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch { Log("Broker rejected or closed a connection. Check pairing and forwarding registration."); }
+        finally
         {
-            inbound.Dispose();
-            Log($"Broker connection error: {ex.Message}");
+            if (!queued) { stream?.Dispose(); client.Dispose(); }
+            _slots.Release();
         }
     }
 
-    private async Task HandleForwardMarkerAsync(NetworkStream stream, byte firstByte, CancellationToken ct)
+    private async Task RelayAdbAsync(Stream stream, byte[] first, CancellationToken ct)
     {
-        var line = new List<byte> { firstByte };
-        var oneByte = new byte[1];
-        while (line.Count < MaxMarkerLine)
+        using var adb = new TcpClient();
+        await adb.ConnectAsync(IPAddress.Loopback, _adbServerPort, ct);
+        var watcher = new AdbForwardWatcher();
+        watcher.ForwardEstablished += (_, port) => { lock (_gate) _forwardPorts.Add(port); };
+        watcher.ForwardRemoved += (_, port) => { lock (_gate) _forwardPorts.Remove(port); };
+        watcher.ForwardsCleared += (_, _) => { lock (_gate) _forwardPorts.Clear(); };
+        watcher.ReverseForwardEstablished += (_, mapping) => { lock (_gate) _reverseMappings[mapping.RemoteSpec] = mapping.LocalPort; };
+        watcher.ReverseForwardRemoved += (_, spec) =>
         {
-            var read = await stream.ReadAsync(oneByte, ct);
-            if (read <= 0) break;
-            line.Add(oneByte[0]);
-            if (oneByte[0] == (byte)'\n') break;
-        }
-
-        var text = Encoding.ASCII.GetString(line.ToArray());
-        if (text.StartsWith("FWD:", StringComparison.Ordinal) &&
-            int.TryParse(text["FWD:".Length..].Trim(), out var port) && port is > 0 and <= 65535)
+            lock (_gate)
+                if (_reverseMappings.Remove(spec, out var port) && !_reverseMappings.ContainsValue(port)) RemoveReverse(port);
+        };
+        watcher.ReverseForwardsCleared += (_, _) =>
         {
-            await RelayToAsync(stream, port, null, ct);
-        }
-        else
-        {
-            // Didn't actually match the marker format — treat what we buffered as the
-            // start of ordinary adb traffic rather than dropping it on the floor.
-            await RelayToAsync(stream, _adbServerPort, line.ToArray(), ct);
-        }
+            lock (_gate)
+            {
+                _reverseMappings.Clear();
+                foreach (var port in _reverseListeners.Keys.ToArray()) RemoveReverse(port);
+            }
+        };
+        watcher.OnClientToServer(first);
+        await adb.GetStream().WriteAsync(first, ct);
+        await RelayPump.CopyBothWaysAsync(stream, adb.GetStream(),
+            (bytes, count) => watcher.OnClientToServer(bytes.AsSpan(0, count)),
+            (bytes, count) => watcher.OnServerToClient(bytes.AsSpan(0, count)), ct);
     }
 
-    private async Task HandleReverseMarkerAsync(TcpClient inbound, NetworkStream stream, byte firstByte, CancellationToken ct)
+    private static async Task RelayForwardAsync(Stream stream, int port, CancellationToken ct)
     {
-        var line = new List<byte> { firstByte };
-        var oneByte = new byte[1];
-        while (line.Count < MaxMarkerLine)
-        {
-            var read = await stream.ReadAsync(oneByte, ct);
-            if (read <= 0) { inbound.Dispose(); return; }
-            line.Add(oneByte[0]);
-            if (oneByte[0] == (byte)'\n') break;
-        }
-
-        var text = Encoding.ASCII.GetString(line.ToArray());
-        if (!text.StartsWith("REV:", StringComparison.Ordinal) ||
-            !int.TryParse(text["REV:".Length..].Trim(), out var port) || port is <= 0 or > 65535)
-        {
-            Log($"Discarding malformed reverse-pool marker: {text.Trim()}");
-            inbound.Dispose();
-            return;
-        }
-
-        EnsureReverseListener(port);
-
-        Channel<TcpClient> channel;
-        lock (_reverseGate)
-        {
-            if (!_reversePools.TryGetValue(port, out channel!))
-            {
-                channel = Channel.CreateUnbounded<TcpClient>();
-                _reversePools[port] = channel;
-            }
-        }
-
-        await channel.Writer.WriteAsync(inbound, ct);
-        Log($"Reverse-tunnel connection from Companion queued for port {port}.");
+        using var target = new TcpClient();
+        await target.ConnectAsync(IPAddress.Loopback, port, ct);
+        await RelayPump.CopyBothWaysAsync(stream, target.GetStream(), ct);
     }
 
     private void EnsureReverseListener(int port)
     {
-        lock (_reverseGate)
-        {
-            if (_reverseListeners.ContainsKey(port)) return;
-
-            var listener = new TcpListener(IPAddress.Loopback, port);
-            listener.Start();
-            _reverseListeners[port] = listener;
-            Log($"Reverse-tunnel stand-in listener bound on 127.0.0.1:{port} for adb reverse " +
-                $"(triggered by Companion's pool connection, before any pooled item is queued).");
-            _ = ReverseAcceptLoopAsync(port, listener);
-        }
+        if (_reverseListeners.ContainsKey(port)) return;
+        if (_reverseListeners.Count >= 64) throw new InvalidOperationException("Reverse listener limit reached.");
+        var listener = new TcpListener(IPAddress.Loopback, port);
+        listener.Start();
+        _reversePools[port] = Channel.CreateBounded<BrokerConnection>(8);
+        _reverseListeners[port] = listener;
+        _ = AcceptReverseAsync(port, listener, _cts!.Token);
     }
 
-    private async Task ReverseAcceptLoopAsync(int port, TcpListener listener)
+    private async Task AcceptReverseAsync(int port, TcpListener listener, CancellationToken ct)
     {
-        var ct = _cts?.Token ?? CancellationToken.None;
-        while (!ct.IsCancellationRequested)
+        try
         {
-            TcpClient real;
+            while (!ct.IsCancellationRequested)
+            {
+                var client = await listener.AcceptTcpClientAsync(ct);
+                Channel<BrokerConnection>? pool;
+                lock (_gate) _reversePools.TryGetValue(port, out pool);
+                if (pool is null) { client.Dispose(); continue; }
+                _connections.Start(token => PairAsync(client, pool, token), client.Dispose);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException) { }
+    }
+
+    private static async Task PairAsync(TcpClient device, Channel<BrokerConnection> pool, CancellationToken ct)
+    {
+        using (device)
+        {
             try
             {
-                real = await listener.AcceptTcpClientAsync(ct);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(5));
+                using var tunnel = await pool.Reader.ReadAsync(deadline.Token);
+                await tunnel.Stream.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
+                await RelayPump.CopyBothWaysAsync(device.GetStream(), tunnel.Stream, ct);
             }
-            catch (Exception) { break; } // listener stopped — broker shutting down or port torn down
-
-            _ = PairReverseConnectionAsync(port, real, ct);
+            catch (Exception ex) when (ex is OperationCanceledException or ChannelClosedException or IOException or SocketException) { }
         }
     }
 
-    private async Task PairReverseConnectionAsync(int port, TcpClient real, CancellationToken ct)
+    private void RemoveReverse(int port)
     {
-        using var _ = real;
-        Log($"Real adb server connected to the reverse stand-in listener on port {port}; " +
-            $"waiting up to {ReversePairTimeout.TotalSeconds:0}s for a pooled tunnel connection.");
-
-        Channel<TcpClient>? channel;
-        lock (_reverseGate) { _reversePools.TryGetValue(port, out channel); }
-
-        if (channel is null)
+        if (_reverseListeners.Remove(port, out var listener)) listener.Stop();
+        if (_reversePools.Remove(port, out var pool))
         {
-            Log($"Reverse connection on port {port} arrived with no pooled tunnel connection registered.");
-            return;
+            pool.Writer.TryComplete();
+            while (pool.Reader.TryRead(out var pending)) pending.Dispose();
         }
-
-        TcpClient tunnelClient;
-        try
-        {
-            using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            waitCts.CancelAfter(ReversePairTimeout);
-            tunnelClient = await channel.Reader.ReadAsync(waitCts.Token);
-            Log($"Reverse connection on port {port} paired with a pooled tunnel connection.");
-        }
-        catch (OperationCanceledException)
-        {
-            Log($"Reverse connection on port {port} timed out waiting for a pooled tunnel connection.");
-            return;
-        }
-
-        using var __ = tunnelClient;
-        try
-        {
-            var tunnelStream = tunnelClient.GetStream();
-            await tunnelStream.WriteAsync(Encoding.ASCII.GetBytes("GO\n"), ct);
-            await RelayPump.CopyBothWaysAsync(real.GetStream(), tunnelStream, ct);
-        }
-        catch (Exception ex)
-        {
-            Log($"Reverse relay for port {port} failed: {ex.Message}");
-        }
-    }
-
-    private static async Task RelayToAsync(NetworkStream inboundStream, int targetPort, byte[]? prebuffered, CancellationToken ct)
-    {
-        using var outbound = new TcpClient();
-        await outbound.ConnectAsync(IPAddress.Loopback, targetPort, ct);
-        var outboundStream = outbound.GetStream();
-
-        if (prebuffered is { Length: > 0 })
-            await outboundStream.WriteAsync(prebuffered, ct);
-
-        await RelayPump.CopyBothWaysAsync(inboundStream, outboundStream, ct);
+        // Already-paired streams belong to _connections and continue until they close.
     }
 
     public async Task StopAsync()
     {
-        _cts?.Cancel();
+        if (_cts is null) return;
+        await _cts.CancelAsync();
         _listener?.Stop();
+        if (_acceptLoop is not null) await _acceptLoop;
+        await _connections.DisposeAsync();
+        lock (_gate)
+        {
+            foreach (var port in _reverseListeners.Keys.ToArray()) RemoveReverse(port);
+            _reverseMappings.Clear();
+            _forwardPorts.Clear();
+        }
         _listener = null;
-
-        lock (_reverseGate)
-        {
-            foreach (var listener in _reverseListeners.Values)
-            {
-                try { listener.Stop(); } catch { /* already gone */ }
-            }
-            _reverseListeners.Clear();
-
-            foreach (var channel in _reversePools.Values)
-            {
-                channel.Writer.TryComplete();
-                while (channel.Reader.TryRead(out var pending))
-                    pending.Dispose();
-            }
-            _reversePools.Clear();
-        }
-
-        if (_acceptLoopTask is not null)
-        {
-            try { await _acceptLoopTask; } catch { /* swallow cancellation */ }
-            _acceptLoopTask = null;
-        }
-
-        _cts?.Dispose();
+        _cts.Dispose();
         _cts = null;
     }
 
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
+        if (_ownsIdentity) _identity.Dispose();
+    }
 
     private void Log(string message) => LogMessage?.Invoke(this, message);
 }

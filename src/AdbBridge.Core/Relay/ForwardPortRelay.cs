@@ -162,11 +162,10 @@ public sealed class ForwardPortRelay : IAsyncDisposable
             try
             {
                 using var outbound = new TcpClient();
-                await outbound.ConnectAsync(target.Host, target.Port, ct);
+                await using var outboundStream = await AdbBridge.Core.Security.SecureTunnel.ConnectAsync(outbound, target, ct);
                 Log($"Forwarded connection on port {_port} reached the tunnel in {(DateTime.UtcNow - acceptedAt).TotalMilliseconds:0}ms.");
 
                 var inboundStream = inbound.GetStream();
-                var outboundStream = outbound.GetStream();
 
                 var marker = Encoding.ASCII.GetBytes($"FWD:{_port}\n");
                 await outboundStream.WriteAsync(marker, ct);

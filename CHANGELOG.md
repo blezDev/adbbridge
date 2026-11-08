@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.5 - security update
+
+- Replace unauthenticated public ADB transport with mutually authenticated TLS 1.2/1.3. Each private connection code includes a pinned Host certificate and paired client credential; plaintext connections have no fallback.
+- Keep Host ADB on `127.0.0.1:5037`. Permit broker forward/reverse ports only after successful ADB registration, with handshake deadlines and connection/pool limits.
+- Protect saved pairing identities and Companion connection codes with Windows DPAPI and restricted settings-directory permissions. Add **Reset pairing** to revoke all previously shared codes.
+- Remove ngrok and Pinggy tokens from process arguments. Use ngrok's child environment and a restricted temporary Pinggy SSH configuration; validate SSH configuration input and avoid logging provider terminal output or ADB command payloads.
+- Require exact repository HTTPS release asset URLs, cap checksum metadata and actual extracted bytes, reject linked installation paths, and reverify the copied update immediately before executable replacement.
+- Add security regression coverage for unpaired clients, incorrect certificate pins, plaintext downgrade, broker port restrictions, TLS forward/reverse stream survival, credential handling, and updater tampering.
+- Update README setup and migration guidance; add a security audit report and trust limitations in `SECURITY.md`.
+
+### Updating
+
+**Update both PCs to v1.0.5, start Host sharing, and copy its new private connection code to Companion.** Old versions and bare host:port addresses cannot connect to the new transport. Settings are preserved; the old plaintext Companion endpoint is intentionally not reused.
+
+Choose **Update and restart**, or download the self-contained Windows x64 ZIP. The separate `SHA256SUMS.txt` asset supports verification and in-app updates. scrcpy remains installed on demand.
+
+### Validation
+
+Release build, dependency advisory scan, security tests, encrypted relay lifecycle/order tests, ADB protocol tests, updater tests, and scrcpy installer tests. Isolated updater processes verify replacement/restart, rollback, and rejection of a package changed after the initial verification. v1.0.4 scrcpy and Android Studio mirroring behavior is retained by the loopback regression checks; a fresh two-PC device session on the new TLS transport still requires both machines to update.
+
 ## v1.0.4
 
 - Keep established forward and reverse streams alive when ADB mappings are removed. scrcpy and Studio can remove their setup mappings immediately after connecting; this must not disconnect video or control sockets.
@@ -14,8 +34,8 @@ On Companion, connect to the Host, select a ready device, and click **Mirror dev
 Video should stay connected after scrcpy finishes its initial tunnel setup.
 
 Regression checks cover forward/reverse mapping removal, remove-all, port reuse,
-active-session shutdown, and video/control connection ordering. Native Android Studio
-mirroring still needs a separate retest; the fix is verified for scrcpy.
+active-session shutdown, and video/control connection ordering. The user subsequently confirmed native Android Studio mirroring also works, though
+it is somewhat slower than standalone scrcpy. App Inspection also works.
 
 ## v1.0.3
 

@@ -150,12 +150,10 @@ public sealed class TcpRelay : IAsyncDisposable
             using var outbound = new TcpClient();
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             connectCts.CancelAfter(ConnectTimeout);
-            await outbound.ConnectAsync(target.Host, target.Port, connectCts.Token);
+            await using var outboundStream = await AdbBridge.Core.Security.SecureTunnel.ConnectAsync(outbound, target, connectCts.Token);
 
             LastSuccessfulConnection = DateTime.UtcNow;
             LastError = null;
-
-            var outboundStream = outbound.GetStream();
 
             var watcher = new AdbForwardWatcher();
             watcher.ForwardEstablished += (_, port) => ForwardEstablished?.Invoke(this, port);
@@ -164,7 +162,7 @@ public sealed class TcpRelay : IAsyncDisposable
             watcher.ReverseForwardEstablished += (_, e) => ReverseForwardEstablished?.Invoke(this, e);
             watcher.ReverseForwardRemoved += (_, remoteSpec) => ReverseForwardRemoved?.Invoke(this, remoteSpec);
             watcher.ReverseForwardsCleared += (_, _) => ReverseForwardsCleared?.Invoke(this, EventArgs.Empty);
-            watcher.ServiceObserved += (_, service) => Log($"adb service request: {service}");
+            watcher.ServiceObserved += (_, service) => Log($"adb service request: {AdbBridge.Core.Security.SafeDiagnostics.ServiceName(service)}");
 
             if (prebuffered.Length > 0)
             {

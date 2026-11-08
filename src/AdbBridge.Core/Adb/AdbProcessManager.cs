@@ -39,8 +39,8 @@ public sealed class AdbProcessManager
     }
 
     /// <summary>
-    /// Host-side only: starts an adb server bound to 0.0.0.0:5037 (rather than
-    /// loopback-only) so it's reachable through the tunnel. Runs in the foreground
+    /// Host-side only: starts an adb server bound to loopback; the authenticated
+    /// broker is the only public tunnel entry point. Runs in the foreground
     /// (nodaemon) so we hold a process handle and can detect if it dies.
     /// </summary>
     public void StartNodaemonServer(string adbExePath)
@@ -50,7 +50,7 @@ public sealed class AdbProcessManager
         var psi = new ProcessStartInfo
         {
             FileName = adbExePath,
-            Arguments = "-a nodaemon server start",
+            Arguments = "-L tcp:127.0.0.1:5037 nodaemon server start",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -64,7 +64,7 @@ public sealed class AdbProcessManager
         _serverProcess.BeginOutputReadLine();
         _serverProcess.BeginErrorReadLine();
 
-        Log($"Started nodaemon adb server (pid {_serverProcess.Id}), bound to 0.0.0.0:5037.");
+        Log($"Started nodaemon adb server (pid {_serverProcess.Id}), bound to 127.0.0.1:5037.");
     }
 
     public bool IsServerRunning => _serverProcess is { HasExited: false };

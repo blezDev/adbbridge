@@ -11,7 +11,8 @@ namespace AdbBridge.Core.Tunnels;
 /// token. With a Pinggy Pro token the tunnel host:port is persistent across restarts,
 /// which free-tier ngrok can't offer.
 ///
-/// Command shape: `ssh -p 443 -R0:localhost:&lt;port&gt; &lt;token&gt;+tcp@a.pinggy.io`. Pinggy's
+/// Command shape: `ssh -F &lt;private-config&gt; -p 443 -R0:localhost:&lt;port&gt; a.pinggy.io`.
+/// The token-bearing User value lives in a current-user-only temporary SSH config. Pinggy's
 /// server requires a real password-auth round trip (any password works — it's not
 /// actually checked) that ssh cannot complete non-interactively over a redirected pipe
 /// on its own, so this sets SSH_ASKPASS/SSH_ASKPASS_REQUIRE=force with a trivial helper
@@ -24,8 +25,8 @@ namespace AdbBridge.Core.Tunnels;
 /// Host key checking uses `accept-new` against a real, persisted known_hosts file
 /// (not "no" / NUL) — trusts a.pinggy.io's key the first time without an interactive
 /// prompt, but still rejects a *different* key later, so a MITM after the first
-/// connection is still caught. Arguments are built via ArgumentList rather than a raw
-/// interpolated string so the token can't be misparsed into extra flags.
+/// connection is still caught. Tokens are validated before writing SSH configuration
+/// and are never placed in command-line arguments or raw provider logs.
 /// </summary>
 public sealed class PinggyTunnelProvider : ITunnelProvider
 {
@@ -39,6 +40,7 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
     private readonly string _token;
     private readonly int _localPort;
     private readonly string _pinggyHost;
+    private string? _privateConfig;
 
     private Process? _process;
     private CancellationTokenSource? _monitorCts;
@@ -54,6 +56,9 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
 
     public PinggyTunnelProvider(string sshExePath, string token, int localPort = 5037, string pinggyHost = "a.pinggy.io")
     {
+        if (string.IsNullOrWhiteSpace(token) || token.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_' or '+' or '.')))
+            throw new ArgumentException("Pinggy token contains unsupported characters.", nameof(token));
+        if (Uri.CheckHostName(pinggyHost) != UriHostNameType.Dns) throw new ArgumentException("Invalid Pinggy host.", nameof(pinggyHost));
         _sshExePath = sshExePath;
         _token = token;
         _localPort = localPort;
@@ -165,7 +170,7 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
         }
     }
 
-    private void LaunchProcess()
+    private ProcessStartInfo BuildStartInfo()
     {
         _outputBuffer.Clear();
 
@@ -178,6 +183,11 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
             RedirectStandardInput = true,
             CreateNoWindow = true,
         };
+
+        _privateConfig ??= Path.Combine(AdbBridge.Core.Security.PrivateFiles.DirectoryPath, "pinggy-" + Guid.NewGuid().ToString("N") + ".conf");
+        AdbBridge.Core.Security.PrivateFiles.WriteText(_privateConfig, $"Host {_pinggyHost}\n    User {_token}+tcp\n");
+        psi.ArgumentList.Add("-F");
+        psi.ArgumentList.Add(_privateConfig);
 
         // ArgumentList (rather than a single interpolated Arguments string) makes .NET
         // quote each entry correctly, so a token containing a space or quote can't be
@@ -203,7 +213,7 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
         psi.ArgumentList.Add("-o");
         psi.ArgumentList.Add("ServerAliveCountMax=3");
         psi.ArgumentList.Add($"-R0:localhost:{_localPort}");
-        psi.ArgumentList.Add($"{_token}+tcp@{_pinggyHost}");
+        psi.ArgumentList.Add(_pinggyHost);
 
         // Pinggy's server requires completing a password prompt (any password, even
         // blank, is accepted — it's not actually checked) before it does anything.
@@ -215,7 +225,12 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
         psi.EnvironmentVariables["SSH_ASKPASS"] = EnsureAskPassHelper();
         psi.EnvironmentVariables["SSH_ASKPASS_REQUIRE"] = "force";
         psi.EnvironmentVariables["DISPLAY"] = "dummy:0"; // some OpenSSH builds also gate askpass on DISPLAY being set
+        return psi;
+    }
 
+    private void LaunchProcess()
+    {
+        var psi = BuildStartInfo();
         _process = new Process { StartInfo = psi };
         _process.Start();
 
@@ -233,8 +248,8 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
     private static string EnsureAskPassHelper()
     {
         var path = Path.Combine(AppDataDir(), "askpass_blank.cmd");
-        if (!File.Exists(path))
-            File.WriteAllText(path, "@echo.\r\n");
+        // Always restore the known helper body instead of executing a preexisting script.
+        AdbBridge.Core.Security.PrivateFiles.WriteText(path, "@echo.\r\n");
         return path;
     }
 
@@ -278,9 +293,11 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
                 _addressTcs.TrySetResult(info);
         }
 
-        var clean = AnsiPattern.Replace(chunk, "").Trim();
-        if (clean.Length > 0)
-            Log($"[pinggy] {clean}");
+        // Terminal redraw chunks can split a secret across reads. Do not log raw
+        // chunks; retain only fixed diagnostic categories and the parsed endpoint.
+        var clean = AnsiPattern.Replace(chunk, "");
+        foreach (var status in new[] { "Connection refused", "Connection timed out", "Host key verification failed", "Permission denied" })
+            if (clean.Contains(status, StringComparison.OrdinalIgnoreCase)) Log("[pinggy] " + status);
     }
 
     public Task StopAsync()
@@ -306,6 +323,7 @@ public sealed class PinggyTunnelProvider : ITunnelProvider
             try { await _monitorTask; } catch { /* swallow cancellation */ }
         }
         _monitorCts?.Dispose();
+        if (_privateConfig is not null && File.Exists(_privateConfig)) File.Delete(_privateConfig);
     }
 
     private void Log(string message) => LogMessage?.Invoke(this, message);

@@ -54,6 +54,7 @@ public sealed class ScrcpyInstaller
         var ownsClient = client is null;
         try
         {
+            AdbBridge.Core.Security.SafeArchive.RejectLinks(_installRoot);
             existing = FindExisting(configuredPath);
             if (existing is not null) return existing;
             progress?.Report($"Downloading scrcpy {Version}...");
@@ -128,7 +129,8 @@ public sealed class ScrcpyInstaller
             else
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                entry.ExtractToFile(path, overwrite: false);
+                AdbBridge.Core.Security.SafeArchive.RejectLinks(path);
+                AdbBridge.Core.Security.SafeArchive.Extract(entry, path, 500L * 1024 * 1024, ct);
             }
         }
         if (!IsInstalled(Path.Combine(destination, PackageFolder, "scrcpy.exe")))

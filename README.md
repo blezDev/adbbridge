@@ -1,11 +1,37 @@
 # AdbBridge
 
-[Download the latest Windows release](https://github.com/blezDev/adbbridge/releases/latest) · [What's new](CHANGELOG.md)
+[Download the latest Windows release](https://github.com/blezDev/adbbridge/releases/latest) · [What's new](CHANGELOG.md) | [Security](SECURITY.md)
+
+## v1.0.5 security update
+
+**Update both Host and Companion before reconnecting.** Earlier versions use an
+incompatible unauthenticated transport. v1.0.5 requires a new private connection code;
+a bare `host:port` address is no longer accepted on Companion.
+
+1. Stop sharing on Host and update both PCs using **Update and restart**, or download
+   and extract the Windows ZIP.
+2. Start sharing on the updated Host and click **Copy connection code**.
+3. Transfer the entire `adbbridge://...` code privately to your trusted Companion,
+   paste it into **Secure connection code**, and connect.
+
+The code contains a client private key and the Host certificate fingerprint. Anyone
+with the code can access the shared phone through ADB. Keep it out of screenshots,
+public issues, logs, and shared clipboard history. Host's **Reset pairing** disconnects
+Companions and invalidates all old codes; start sharing again and redistribute the new
+code only to trusted PCs. Pairing certificates expire after five years; reset pairing
+to renew them.
+
+This release adds mutually authenticated TLS 1.2/1.3 with certificate pinning, restricts
+the broker to ports registered by successful ADB forwarding commands, keeps Host ADB
+on loopback, removes provider tokens from process arguments, and hardens update and
+scrcpy extraction. Saved pairing credentials use Windows DPAPI. See [Security](SECURITY.md)
+for audit scope, validation, and remaining trust assumptions. Previously stored provider
+tokens or old diagnostic logs should be reviewed; rotate tokens if they were exposed.
 
 ## Screenshots
 
 The updated interface uses consistent controls and live status cards across all
-screens. These UI previews are rendered from the app's layouts with sample connection
+screens. These v1.0.3 UI previews are rendered from the app's layouts with sample connection
 and device data.
 
 **Choose this computer's role**
@@ -36,9 +62,12 @@ The Companion screen continuously shows two independent, auto-updating facts:
 - **Phone: forwarded / not detected / present but not ready** — is a device actually
   showing up through that connection, and in what state.
 
-Tokens are encrypted at rest with Windows DPAPI and never passed as plain command-line
-arguments to ngrok/ssh, and Pinggy's SSH host key is pinned via a real known_hosts file
-instead of disabling verification. On startup the app checks GitHub Releases for a newer
+Saved provider tokens are encrypted with Windows DPAPI and are excluded from process
+arguments. ngrok receives its token through the child environment; Pinggy uses a
+restricted temporary SSH configuration, deleted on normal disposal. Pinggy SSH uses
+trust on first use with a persisted known_hosts file and rejects subsequent key changes.
+
+On startup the app checks GitHub Releases for a newer
 version and shows a dismissible **Update and restart** banner when one is available.
 Click it to download and install the update inside the app, without opening a browser.
 
@@ -53,9 +82,8 @@ the new executable fails, the installer attempts to restore and relaunch the pre
 version. Run the app from a writable folder; updating a protected installation folder
 requires moving it to a writable location first.
 
-**Upgrading from the original v1.0.2 or earlier:** download the rebuilt v1.0.2 release
-once manually. The old updater opens a browser, and equal version numbers do not
-trigger its update banner. Future newer versions use the in-app installer.
+**Upgrading from a build that only offers View release:** download the latest Windows
+release manually once. Subsequent newer versions use the in-app installer.
 
 ## Prerequisites
 
@@ -97,7 +125,7 @@ both the Local PC and the Cloud PC. Prebuilt releases are also available under
 The app opens with a guided Host/Companion chooser. Each workspace separates setup
 from live connection status and device cards. Android SDK paths and connection
 diagnostics are expandable; the activity log stays collapsed until needed. On
-Companion, press Enter in the Host address field to connect. Device selection is
+Companion, press Enter in the secure connection code field to connect. Device selection is
 retained during refresh, and **Mirror device** becomes available when a phone is ready.
 
 Launch `AdbBridge.exe` on both machines. Pick **Host** on the Local PC (phone attached)
@@ -113,13 +141,13 @@ saved for next time — then leave both running (minimize to tray) for the sessi
 1. Fill in the `adb.exe` path, pick a **Tunnel provider** (ngrok or Pinggy), and fill in
    that provider's path/token fields (saved after first run).
 2. Click **Start Sharing**. Once the status panel shows the tunnel connected, copy the
-   address shown (e.g. `0.tcp.ngrok.io:12345` or `xxxxx.a.pinggy.link:40527`).
+   entire private connection code shown (`adbbridge://...`).
 3. Confirm your phone shows up in the local device list.
 
 **Companion screen (Cloud PC):**
 1. Launch this *before* opening Android Studio (or restart Studio after connecting).
 2. Confirm the `adb.exe` path matches the one Android Studio uses.
-3. Paste the address from the Host screen and click **Connect**.
+3. Paste the private connection code from the Host screen and click **Connect**.
 4. Watch the status panel: wait for **Host: connected** and **Phone: forwarded —
    `<model>`**. That confirms the relay + tunnel are working end-to-end before you
    even touch Android Studio.
@@ -127,7 +155,7 @@ saved for next time — then leave both running (minimize to tray) for the sessi
 
 Leave the app running (minimize to tray) on both machines for the rest of the session.
 With ngrok free plan or a Pinggy free tunnel, the address changes on every Host restart
-— re-copy the new address into the Companion screen and hit Connect again; everything
+— re-copy the new connection code into the Companion screen and hit Connect again; everything
 else recovers automatically. With a **Pinggy Pro** token the address is persistent, so
 this step goes away entirely.
 
@@ -135,14 +163,16 @@ this step goes away entirely.
 `AdbBridge.exe host` or `AdbBridge.exe companion` (not the bare exe) in the Windows
 startup Run key, so a relaunch after login goes straight to that screen instead of the
 role picker. On the Companion screen, also checking **Auto-connect on startup** will
-reconnect automatically using the last address you entered, without any click.
+reconnect automatically using the last private connection code you entered, without any click.
 
 ## Device Mirroring and App Inspection
 
 ### Mirroring inside Android Studio
 
 Keep Host and Companion connected, then open **View > Tool Windows > Running Devices**
-in Android Studio and select the phone. The bridge's reverse tunnels carry Studio's
+in Android Studio and select the phone. Native Studio mirroring and App Inspection were
+confirmed working by the user on v1.0.4; Studio mirroring is somewhat slower than scrcpy.
+The bridge's reverse tunnels carry Studio's
 screen-sharing agent connections; scrcpy is not required for this mode.
 
 If Studio's agent exits while using the phone's VP8 encoder (observed on the Infinix
@@ -183,16 +213,20 @@ are announced only after both ADB service acceptance and forwarding-operation su
 allocated `tcp:0` ports are read after those two statuses. Failed mappings do not open
 Companion listeners.
 
-Protocol regression checks (no phone or external test packages required):
+Protocol and security regression checks (no phone or external test packages required):
 
 ```powershell
-dotnet run --project tests/AdbBridge.ProtocolTests
+dotnet run --project tests/AdbBridge.ProtocolTests -c Release
+dotnet run --project tests/AdbBridge.SecurityTests -c Release
+dotnet run --project tests/AdbBridge.RelayTests -c Release
+dotnet run --project tests/AdbBridge.UpdateTests -c Release
+dotnet run --project tests/AdbBridge.ScrcpyTests -c Release
 ```
 
 Plain adb commands (`shell`, `logcat`, `install`, `push`, and even the `adb forward`/
 `adb reverse` commands themselves) all ride inside the single relayed connection to the
 adb server, so they worked from day one. Android Studio's **Layout Inspector**,
-**Network/Database Inspector**, **profilers**, and **Device Mirroring** don't: they need
+**Network/Database Inspector**, **profilers**, and **Device Mirroring** also need
 Studio to reach a TCP port or receive a connection *directly*, bypassing the adb server
 protocol entirely — and by default only the adb server's own port was tunneled, so those
 connections found nothing on the Companion side and the feature failed silently even

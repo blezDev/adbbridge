@@ -28,20 +28,36 @@ public static class UpdatePackage
     {
         if (update.DownloadUrl is null || update.ChecksumUrl is null)
             throw new InvalidOperationException("This release is missing its Windows package or SHA256SUMS.txt.");
+        if (!UpdateChecker.IsAssetUrl(update.DownloadUrl, update.Version, PackageName) ||
+            !UpdateChecker.IsAssetUrl(update.ChecksumUrl, update.Version, "SHA256SUMS.txt"))
+            throw new InvalidDataException("Updates must use this repository's exact HTTPS release assets.");
+        AdbBridge.Core.Security.SafeArchive.RejectLinks(stagingDirectory);
         var ownsClient = client is null;
         client ??= new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
         try
         {
             client.DefaultRequestHeaders.UserAgent.ParseAdd("AdbBridge-Updater");
-            var checksum = ParseChecksum(await client.GetStringAsync(update.ChecksumUrl, ct));
+            using var checksumResponse = await client.GetAsync(update.ChecksumUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            checksumResponse.EnsureSuccessStatusCode();
+            await using var checksumInput = await checksumResponse.Content.ReadAsStreamAsync(ct);
+            using var checksumBytes = new MemoryStream();
+            var checksumBuffer = new byte[4096];
+            int checksumRead;
+            while ((checksumRead = await checksumInput.ReadAsync(checksumBuffer, ct)) > 0)
+            {
+                if (checksumBytes.Length + checksumRead > 16384) throw new InvalidDataException("The checksum file is too large.");
+                checksumBytes.Write(checksumBuffer, 0, checksumRead);
+            }
+            var checksum = ParseChecksum(System.Text.Encoding.ASCII.GetString(checksumBytes.ToArray()));
             Directory.CreateDirectory(stagingDirectory);
             var zipPath = Path.Combine(stagingDirectory, PackageName);
+            AdbBridge.Core.Security.SafeArchive.RejectLinks(zipPath);
             using var response = await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
             var length = response.Content.Headers.ContentLength;
             if (length > MaxDownloadBytes) throw new InvalidDataException("The update package is too large.");
             await using (var source = await response.Content.ReadAsStreamAsync(ct))
-            await using (var destination = File.Create(zipPath))
+            await using (var destination = new FileStream(zipPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 var buffer = new byte[81920];
                 long total = 0;
@@ -73,7 +89,8 @@ public static class UpdatePackage
             throw new InvalidDataException("The update package must contain exactly one AdbBridge.exe.");
         // Extract only the expected file, never archive-controlled paths or settings.
         var exePath = Path.Combine(stagingDirectory, "AdbBridge.new.exe");
-        entries[0].ExtractToFile(exePath, overwrite: false);
+        AdbBridge.Core.Security.SafeArchive.RejectLinks(exePath);
+        AdbBridge.Core.Security.SafeArchive.Extract(entries[0], exePath, MaxDownloadBytes);
         using var file = File.OpenRead(exePath);
         if (file.ReadByte() != 'M' || file.ReadByte() != 'Z')
             throw new InvalidDataException("The update does not contain a Windows executable.");

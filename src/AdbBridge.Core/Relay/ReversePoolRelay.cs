@@ -174,12 +174,12 @@ public sealed class ReversePoolRelay : IAsyncDisposable
                 }
 
                 TcpClient? tunnel = null;
+                Stream? securedStream = null;
                 var handedOff = false;
                 try
                 {
                     tunnel = new TcpClient();
-                    await tunnel.ConnectAsync(target.Host, target.Port, ct);
-                    var stream = tunnel.GetStream();
+                    var stream = securedStream = await AdbBridge.Core.Security.SecureTunnel.ConnectAsync(tunnel, target, ct);
 
                     var marker = Encoding.ASCII.GetBytes($"REV:{_port}\n");
                     await stream.WriteAsync(marker, ct);
@@ -211,13 +211,14 @@ public sealed class ReversePoolRelay : IAsyncDisposable
                     tunnel?.Dispose();
                     try { await Task.Delay(250, ct); } catch (OperationCanceledException) { break; }
                 }
-                finally { if (!handedOff) tunnel?.Dispose(); }
+                finally { if (!handedOff) { securedStream?.Dispose(); tunnel?.Dispose(); } }
             }
         }
 
-        private async Task BridgeConsumedConnectionAsync(TcpClient tunnel, NetworkStream stream, CancellationToken ct)
+        private async Task BridgeConsumedConnectionAsync(TcpClient tunnel, Stream stream, CancellationToken ct)
         {
             using var _ = tunnel;
+            await using var ownedStream = stream;
             using var local = new TcpClient();
             try
             {
@@ -238,7 +239,7 @@ public sealed class ReversePoolRelay : IAsyncDisposable
             catch (Exception ex) { Log($"Reverse-tunnel port {_port}: stream ended ({ex.Message})."); }
         }
 
-        private static async Task<bool> WaitForGoAsync(NetworkStream stream, CancellationToken ct)
+        private static async Task<bool> WaitForGoAsync(Stream stream, CancellationToken ct)
         {
             var buf = new byte[3];
             var total = 0;
