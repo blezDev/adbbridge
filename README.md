@@ -1,5 +1,25 @@
 # AdbBridge
 
+[Download the latest Windows release](https://github.com/blezDev/adbbridge/releases/latest) · [What's new](CHANGELOG.md)
+
+## Screenshots
+
+The updated interface uses consistent controls and live status cards across all
+screens. These UI previews are rendered from the app's layouts with sample connection
+and device data.
+
+**Choose this computer's role**
+
+![AdbBridge role chooser](docs/screenshots/role-chooser.png)
+
+**Host — share a USB-connected phone**
+
+![AdbBridge Host workspace with sharing address and device status](docs/screenshots/host.png)
+
+**Companion — connect, inspect, and mirror**
+
+![AdbBridge Companion workspace with connection status and device mirroring](docs/screenshots/companion.png)
+
 ## About
 
 A single Windows app that lets Android Studio, running on a Cloud PC with no USB
@@ -74,6 +94,12 @@ both the Local PC and the Cloud PC. Prebuilt releases are also available under
 
 ## Usage
 
+The app opens with a guided Host/Companion chooser. Each workspace separates setup
+from live connection status and device cards. Android SDK paths and connection
+diagnostics are expandable; the activity log stays collapsed until needed. On
+Companion, press Enter in the Host address field to connect. Device selection is
+retained during refresh, and **Mirror device** becomes available when a phone is ready.
+
 Launch `AdbBridge.exe` on both machines. Pick **Host** on the Local PC (phone attached)
 and **Companion** on the Cloud PC (Android Studio). Configure each once — settings are
 saved for next time — then leave both running (minimize to tray) for the session.
@@ -136,11 +162,15 @@ phone; successful rendering must be checked on the actual device.
 
 ### Optional standalone scrcpy window
 
-On Companion, select a ready device and click **Mirror with scrcpy...**. The first
-time, select `scrcpy.exe` from an extracted official
-[scrcpy release](https://github.com/Genymobile/scrcpy/releases); keep the entire release
-folder, including its server and libraries. The executable path is saved. Mirroring
-opens in scrcpy's own window and logs startup errors in the Companion log.
+On Companion, select a ready device and click **Mirror device**. AdbBridge looks for
+a complete scrcpy installation in its saved location, beside the app (including a
+`scrcpy` subfolder), in its managed tools folder, and on PATH. If none is found, it
+automatically downloads the official scrcpy 5.0.1 Windows x64 package, verifies its
+published SHA-256 checksum, and installs the full package under
+`%LOCALAPPDATA%\AdbBridge\tools\scrcpy`. No file picker, administrator access, or
+separate installer is required. Setup shows download progress and can be canceled
+with the same button. The saved executable is reused on subsequent launches.
+Mirroring opens in scrcpy's own window and logs startup errors in the Companion log.
 
 This uses scrcpy's forward-tunnel mode through the bridge, with H.264, a maximum
 dimension of 1280 pixels, 30 FPS, and audio disabled. It provides an alternative for

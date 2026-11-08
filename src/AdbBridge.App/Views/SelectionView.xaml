@@ -1,31 +1,46 @@
 <UserControl x:Class="AdbBridge.App.Views.SelectionView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid>
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="440">
-            <TextBlock Text="AdbBridge" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
-            <TextBlock Text="What is this PC?" FontSize="14" Foreground="#666" Margin="0,4,0,28" HorizontalAlignment="Center"/>
-
-            <Button x:Name="HostButton" Padding="16" Margin="0,0,0,14" Click="HostButton_Click" HorizontalContentAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="32,24" MaxWidth="1200">
+            <DockPanel Margin="0,0,0,24">
+                <Border DockPanel.Dock="Left" Width="36" Height="36" CornerRadius="10" Background="{StaticResource AccentBrush}" Margin="0,0,12,0"><TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" Foreground="White" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                <Border DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource RoleBadge}"><TextBlock Text="GET STARTED" Style="{StaticResource Eyebrow}"/></Border>
+                <TextBlock Text="AdbBridge" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center"/>
+            </DockPanel>
+            <TextBlock Text="Connect your workspaces" Style="{StaticResource PageTitle}"/>
+            <TextBlock Text="Choose the role of this computer. You can switch roles at any time." Style="{StaticResource Hint}" Margin="0,6,0,24"/>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Button x:Name="HostButton" Background="White" Padding="24" HorizontalContentAlignment="Stretch" Click="HostButton_Click" MinHeight="260">
+                    <StackPanel>
+                        <DockPanel><Border Width="44" Height="44" CornerRadius="10" Background="#E7EEFF" DockPanel.Dock="Left"><TextBlock Text="&#xE8EA;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><TextBlock Text="HOST" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" HorizontalAlignment="Right"/></DockPanel>
+                        <TextBlock Text="My phone is plugged in here" Style="{StaticResource SectionTitle}" Margin="0,22,0,8"/>
+                        <TextBlock Text="Share a USB-connected Android phone from this PC to your other workspace." Style="{StaticResource Hint}" MinHeight="48"/>
+                        <TextBlock Text="Set up Host  →" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,0"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="CompanionButton" Grid.Column="2" Background="White" Padding="24" HorizontalContentAlignment="Stretch" Click="CompanionButton_Click" MinHeight="260">
+                    <StackPanel>
+                        <DockPanel><Border Width="44" Height="44" CornerRadius="10" Background="#E7EEFF" DockPanel.Dock="Left"><TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><TextBlock Text="COMPANION" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" HorizontalAlignment="Right"/></DockPanel>
+                        <TextBlock Text="I use Android Studio here" Style="{StaticResource SectionTitle}" Margin="0,22,0,8"/>
+                        <TextBlock Text="Connect to your Host PC and use its phone for running apps, inspection, and mirroring." Style="{StaticResource Hint}" MinHeight="48"/>
+                        <TextBlock Text="Set up Companion  →" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,0"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+            <Border Style="{StaticResource Card}" Margin="0,20,0,0">
                 <StackPanel>
-                    <TextBlock Text="Host" FontWeight="Bold" FontSize="16"/>
-                    <TextBlock Text="This PC — the phone is plugged into it over USB." TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0"/>
+                    <TextBlock Text="One phone. Two connected PCs." Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="Keep AdbBridge running on both computers while you work." Style="{StaticResource Hint}" Margin="0,8,0,20"/>
+                    <UniformGrid Columns="3">
+                        <StackPanel Margin="0,0,16,0"><TextBlock Text="1. Plug in your phone" FontWeight="SemiBold"/><TextBlock Text="Connect it to your Host via USB." Style="{StaticResource Hint}" FontSize="12" Margin="0,6,0,0"/></StackPanel>
+                        <StackPanel Margin="0,0,16,0"><TextBlock Text="2. Share the address" FontWeight="SemiBold"/><TextBlock Text="Paste it into your Companion PC." Style="{StaticResource Hint}" FontSize="12" Margin="0,6,0,0"/></StackPanel>
+                        <StackPanel><TextBlock Text="3. Start working" FontWeight="SemiBold"/><TextBlock Text="Open Android Studio or mirror the device." Style="{StaticResource Hint}" FontSize="12" Margin="0,6,0,0"/></StackPanel>
+                    </UniformGrid>
                 </StackPanel>
-            </Button>
-
-            <Button x:Name="CompanionButton" Padding="16" Click="CompanionButton_Click" HorizontalContentAlignment="Stretch">
-                <StackPanel>
-                    <TextBlock Text="Companion" FontWeight="Bold" FontSize="16"/>
-                    <TextBlock Text="This PC — Android Studio runs here and needs to see the phone." TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0"/>
-                </StackPanel>
-            </Button>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,24,0,0">
-                <TextBlock x:Name="VersionText" Text="AdbBridge" Foreground="#999" VerticalAlignment="Center"/>
-                <TextBlock Text=" · " Foreground="#999" VerticalAlignment="Center"/>
-                <Button x:Name="CheckUpdatesButton" Content="Check for updates" Padding="0" BorderThickness="0"
-                        Background="Transparent" Foreground="#2563EB" Cursor="Hand" Click="CheckUpdatesButton_Click"/>
-            </StackPanel>
+            </Border>
+            <DockPanel Margin="0,20,0,0"><Button x:Name="CheckUpdatesButton" DockPanel.Dock="Right" Content="Check for updates ↗" Style="{StaticResource QuietButton}" Foreground="{StaticResource AccentBrush}" Click="CheckUpdatesButton_Click"/><TextBlock x:Name="VersionText" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center"/></DockPanel>
         </StackPanel>
-    </Grid>
+    </ScrollViewer>
 </UserControl>

@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using AdbBridge.Core.Adb;
 using AdbBridge.Core.Config;
 using AdbBridge.Core.Logging;
+using AdbBridge.Core.Mirroring;
 using AdbBridge.Core.Relay;
 using AdbBridge.Core.Tunnels;
 using Microsoft.Win32;
@@ -33,6 +34,7 @@ public partial class CompanionView : UserControl, IBridgeView
     private ForwardPortRelay? _forwardRelay;
     private ReversePoolRelay? _reversePoolRelay;
     private bool _isConnected;
+    private CancellationTokenSource? _mirrorInstallCancellation;
     private const string RunKeyName = "AdbBridgeCompanion";
 
     public event Action? BackRequested;
@@ -50,6 +52,7 @@ public partial class CompanionView : UserControl, IBridgeView
         AddressBox.Text = _settings.LastTunnelAddress;
         RunAtStartupCheck.IsChecked = _settings.RunAtStartup;
         AutoConnectCheck.IsChecked = _settings.AutoConnectOnStartup;
+        AdbSettingsExpander.IsExpanded = !File.Exists(_settings.PlatformToolsPath);
 
         _adb.LogMessage += (_, msg) => _log.Append(msg);
 
@@ -72,8 +75,9 @@ public partial class CompanionView : UserControl, IBridgeView
     public void Cleanup() => _ = DisconnectAsync();
     public Task CleanupAsync() => DisconnectAsync();
 
-    private void MirrorButton_Click(object sender, RoutedEventArgs e)
+    private async void MirrorButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_mirrorInstallCancellation is not null) { _mirrorInstallCancellation.Cancel(); return; }
         var owner = Window.GetWindow(this);
         var ready = _devices.Where(d => d.State == "device").ToList();
         var device = DeviceListView.SelectedItem as AdbDevice;
@@ -84,16 +88,22 @@ public partial class CompanionView : UserControl, IBridgeView
             return;
         }
 
-        if (!File.Exists(_settings.ScrcpyExePath))
-        {
-            var dialog = new OpenFileDialog { Title = "Select scrcpy.exe from an extracted scrcpy release", Filter = "scrcpy executable|scrcpy.exe" };
-            if (dialog.ShowDialog(owner) != true) return;
-            _settings.ScrcpyExePath = dialog.FileName;
-            _settings.Save();
-        }
-
+        using var cancellation = new CancellationTokenSource();
+        _mirrorInstallCancellation = cancellation;
+        MirrorButton.Content = "Cancel setup";
         try
         {
+            var installer = new ScrcpyInstaller();
+            var progress = new Progress<string>(message =>
+            {
+                MirrorButton.Content = message + " (Cancel)";
+                _log.Append(message);
+            });
+            _settings.ScrcpyExePath = await installer.EnsureInstalledAsync(_settings.ScrcpyExePath, progress, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            _settings.Save();
+            if (!_isConnected || !_devices.Any(d => d.Serial == device.Serial && d.State == "device"))
+                throw new InvalidOperationException("The device disconnected during setup. Reconnect and click Mirror device again.");
             var start = new ProcessStartInfo(_settings.ScrcpyExePath)
             {
                 UseShellExecute = false,
@@ -116,10 +126,36 @@ public partial class CompanionView : UserControl, IBridgeView
             process.BeginErrorReadLine();
             _ = ObserveScrcpyAsync(process);
         }
+        catch (OperationCanceledException) { _log.Append("scrcpy setup canceled."); }
         catch (Exception ex)
         {
             _log.Append($"Could not start scrcpy: {ex.Message}");
             MessageBox.Show(owner, ex.Message, "Device mirroring", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _mirrorInstallCancellation = null;
+            MirrorButton.Content = "Mirror device";
+            RefreshMirrorAvailability();
+        }
+    }
+
+    private void DeviceListView_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshMirrorAvailability();
+
+    private void RefreshMirrorAvailability()
+    {
+        if (MirrorButton is null) return;
+        var selected = DeviceListView.SelectedItem as AdbDevice;
+        MirrorButton.IsEnabled = _mirrorInstallCancellation is not null ||
+            (_isConnected && (selected?.State == "device" || selected is null && _devices.Count(d => d.State == "device") == 1));
+    }
+
+    private void AddressBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter && ConnectButton.IsEnabled)
+        {
+            e.Handled = true;
+            ConnectButton_Click(sender, e);
         }
     }
 
@@ -174,6 +210,9 @@ public partial class CompanionView : UserControl, IBridgeView
         }
 
         ConnectButton.IsEnabled = false;
+        ConnectButton.Content = "Connecting...";
+        ConnectionProgress.Visibility = Visibility.Visible;
+        BackButton.IsEnabled = false;
         try
         {
             _log.Append("Clearing any existing adb.exe so the relay can claim port 5037...");
@@ -202,6 +241,7 @@ public partial class CompanionView : UserControl, IBridgeView
         }
         catch (Exception ex)
         {
+            await DisconnectAsync();
             _log.Append($"Connect failed: {ex.Message}");
             MessageBox.Show(owner, $"Could not start the relay:\n{ex.Message}", "AdbBridge Companion",
                 MessageBoxButton.OK, MessageBoxImage.Error);
@@ -209,11 +249,20 @@ public partial class CompanionView : UserControl, IBridgeView
         finally
         {
             ConnectButton.IsEnabled = true;
+            ConnectButton.Content = _isConnected ? "Disconnect" : "Connect to Host";
+            ConnectionProgress.Visibility = Visibility.Collapsed;
+            BackButton.IsEnabled = true;
+            AddressBox.IsReadOnly = _isConnected;
+            AdbPathBox.IsReadOnly = _isConnected;
+            BrowseAdbButton.IsEnabled = !_isConnected;
+            RefreshStatusText();
+            RefreshMirrorAvailability();
         }
     }
 
     private async Task DisconnectAsync()
     {
+        _mirrorInstallCancellation?.Cancel();
         _deviceRefreshTimer.Stop();
         _statusTimer.Stop();
 
@@ -242,13 +291,18 @@ public partial class CompanionView : UserControl, IBridgeView
         _devices.Clear();
         Dispatcher.Invoke(() =>
         {
-            ConnectButton.Content = "Connect";
+            ConnectButton.Content = "Connect to Host";
+            AddressBox.IsReadOnly = false;
+            AdbPathBox.IsReadOnly = false;
+            BrowseAdbButton.IsEnabled = true;
             RelayStatusText.Text = "Relay: stopped";
             WatchdogStatusText.Text = "Watchdog: stopped";
             HostConnectionText.Text = "Host: not connected";
             PhoneStatusText.Text = "Phone: unknown";
         });
         _log.Append("Disconnected.");
+        RefreshStatusText();
+        RefreshMirrorAvailability();
     }
 
     private void RefreshStatusText()
@@ -274,7 +328,8 @@ public partial class CompanionView : UserControl, IBridgeView
         if (_relay is null || !_relay.IsListening)
         {
             HostConnectionText.Text = "Host: not connected";
-            PhoneStatusText.Text = "Phone: unknown";
+            PhoneStatusText.Text = "Phone: waiting for a connection";
+            SetConnectionVisual("MutedBrush", "#F3F6FB", "Connect to your Host to discover its devices.");
             return;
         }
 
@@ -287,14 +342,17 @@ public partial class CompanionView : UserControl, IBridgeView
         if (hostConnected)
         {
             HostConnectionText.Text = "Host: connected";
+            SetConnectionVisual("SuccessBrush", "#EDF8F2", "Connected. Open Android Studio to use the forwarded device.");
         }
         else if (failure is not null && (success is null || failure > success))
         {
             HostConnectionText.Text = $"Host: unreachable ({_relay.LastError ?? "connection failed"})";
+            SetConnectionVisual("DangerBrush", "#FFF1F2", "Check that sharing is running on your Host and the address is current.");
         }
         else
         {
             HostConnectionText.Text = "Host: checking…";
+            SetConnectionVisual("WarningBrush", "#FFF8EB", "Reaching your Host. This usually takes a few seconds.");
         }
 
         if (!hostConnected)
@@ -306,6 +364,7 @@ public partial class CompanionView : UserControl, IBridgeView
         if (_devices.Count == 0)
         {
             PhoneStatusText.Text = "Phone: not detected on Host";
+            ConnectionHintText.Text = "Host is connected. Plug in your phone and accept its USB debugging prompt.";
             return;
         }
 
@@ -319,7 +378,17 @@ public partial class CompanionView : UserControl, IBridgeView
         {
             var first = _devices[0];
             PhoneStatusText.Text = $"Phone: present but not ready ({first.State})";
+            ConnectionHintText.Text = first.State == "unauthorized" ? "Unlock the phone and accept its USB debugging prompt." : "Check the phone's USB connection on your Host PC.";
         }
+    }
+
+    private void SetConnectionVisual(string brush, string background, string hint)
+    {
+        var foreground = (System.Windows.Media.Brush)FindResource(brush);
+        ConnectionIndicator.Fill = foreground;
+        HostConnectionText.Foreground = foreground;
+        ConnectionStatusCard.Background = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(background)!;
+        ConnectionHintText.Text = hint;
     }
 
     private async Task RefreshDevicesAsync()
@@ -328,9 +397,14 @@ public partial class CompanionView : UserControl, IBridgeView
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
             var devices = await _adb.GetDevicesAsync(_settings.PlatformToolsPath, cts.Token);
+            var selectedSerial = (DeviceListView.SelectedItem as AdbDevice)?.Serial;
+            if (_devices.SequenceEqual(devices)) { RefreshMirrorAvailability(); return; }
             _devices.Clear();
             foreach (var d in devices)
                 _devices.Add(d);
+            DeviceListView.SelectedItem = _devices.FirstOrDefault(d => d.Serial == selectedSerial)
+                ?? (_devices.Count == 1 ? _devices[0] : null);
+            RefreshMirrorAvailability();
         }
         catch (Exception ex)
         {

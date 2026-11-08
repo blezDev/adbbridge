@@ -175,5 +175,6 @@ public partial class MainWindow : Window
         _currentView?.Cleanup();
         _currentView = bridgeView;
         ViewHost.Content = visual;
+        ViewHost.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
     }
 }

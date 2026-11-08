@@ -48,6 +48,7 @@ public partial class HostView : UserControl, IBridgeView
         SshPathBox.Text = _settings.SshExePath;
         PinggyTokenBox.Password = _settings.PinggyToken;
         RunAtStartupCheck.IsChecked = _settings.RunAtStartup;
+        AdbSettingsExpander.IsExpanded = !File.Exists(_settings.PlatformToolsPath);
 
         ProviderCombo.SelectedIndex = _settings.Provider == TunnelProviderKind.Pinggy ? 1 : 0;
         UpdateProviderPanels();
@@ -74,6 +75,8 @@ public partial class HostView : UserControl, IBridgeView
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)
     {
+        try
+        {
         if (_isSharing)
         {
             await StopSharingAsync();
@@ -81,6 +84,13 @@ public partial class HostView : UserControl, IBridgeView
         else
         {
             await StartSharingAsync();
+        }
+        }
+        catch (Exception ex)
+        {
+            _log.Append($"Sharing failed: {ex.Message}");
+            await StopSharingAsync();
+            MessageBox.Show(Window.GetWindow(this), ex.Message, "Could not start sharing", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -131,6 +141,9 @@ public partial class HostView : UserControl, IBridgeView
         }
 
         StartStopButton.IsEnabled = false;
+        StartStopButton.Content = "Starting sharing...";
+        SharingProgress.Visibility = Visibility.Visible;
+        BackButton.IsEnabled = false;
         try
         {
             _adb.StartNodaemonServer(_settings.PlatformToolsPath);
@@ -143,12 +156,12 @@ public partial class HostView : UserControl, IBridgeView
             _tunnel.LogMessage += (_, msg) => _log.Append(msg);
             _tunnel.AddressChanged += (_, info) =>
             {
-                Dispatcher.Invoke(() => PublicAddressBox.Text = info.ToString());
+                Dispatcher.Invoke(() => { PublicAddressBox.Text = info.ToString(); CopyAddressButton.IsEnabled = true; });
             };
             await _tunnel.StartAsync();
 
             _isSharing = true;
-            StartStopButton.Content = "Stop Sharing";
+            StartStopButton.Content = "Stop sharing";
             _deviceRefreshTimer.Start();
             _statusTimer.Start();
             _log.Append("Sharing started.");
@@ -156,6 +169,11 @@ public partial class HostView : UserControl, IBridgeView
         finally
         {
             StartStopButton.IsEnabled = true;
+            StartStopButton.Content = _isSharing ? "Stop sharing" : "Start sharing";
+            SharingProgress.Visibility = Visibility.Collapsed;
+            BackButton.IsEnabled = true;
+            ProviderCombo.IsEnabled = !_isSharing;
+            RefreshStatusText();
         }
     }
 
@@ -179,18 +197,25 @@ public partial class HostView : UserControl, IBridgeView
         _isSharing = false;
         Dispatcher.Invoke(() =>
         {
-            StartStopButton.Content = "Start Sharing";
-            PublicAddressBox.Text = "(not connected)";
+            StartStopButton.Content = "Start sharing";
+            PublicAddressBox.Text = "Waiting for sharing to start";
+            CopyAddressButton.IsEnabled = false;
+            ProviderCombo.IsEnabled = true;
             AdbStatusText.Text = "ADB server: stopped";
             TunnelStatusText.Text = "Tunnel: stopped";
         });
         _log.Append("Sharing stopped.");
+        RefreshStatusText();
     }
 
     private void RefreshStatusText()
     {
         AdbStatusText.Text = $"ADB server: {(_adb.IsServerRunning ? "running" : "stopped")}";
         TunnelStatusText.Text = $"Tunnel: {(_tunnel?.IsRunning == true ? "connected" : "reconnecting…")}";
+        if (!_isSharing) TunnelStatusText.Text = "Tunnel: stopped";
+        SharingIndicator.Fill = (System.Windows.Media.Brush)FindResource(_tunnel?.IsRunning == true ? "SuccessBrush" : "MutedBrush");
+        AdbStatusText.Foreground = (System.Windows.Media.Brush)FindResource(_adb.IsServerRunning ? "SuccessBrush" : "InkBrush");
+        SharingStatusCard.Background = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(_tunnel?.IsRunning == true ? "#EDF8F2" : "#F3F6FB")!;
     }
 
     private async Task RefreshDevicesAsync()
@@ -208,12 +233,15 @@ public partial class HostView : UserControl, IBridgeView
         }
     }
 
-    private void CopyAddressButton_Click(object sender, RoutedEventArgs e)
+    private async void CopyAddressButton_Click(object sender, RoutedEventArgs e)
     {
         if (PublicAddressBox.Text is { Length: > 0 } text && text != "(not connected)")
         {
             Clipboard.SetText(text);
             _log.Append("Address copied to clipboard.");
+            CopyAddressButton.Content = "✓  Address copied";
+            await Task.Delay(1800);
+            CopyAddressButton.Content = "Copy sharing address";
         }
     }
 
@@ -229,6 +257,7 @@ public partial class HostView : UserControl, IBridgeView
         var dialog = new OpenFileDialog { Filter = "ngrok.exe|ngrok.exe", Title = "Locate ngrok.exe" };
         if (dialog.ShowDialog(Window.GetWindow(this)) == true)
             NgrokPathBox.Text = dialog.FileName;
+        CheckNgrokAvailability();
     }
 
     private void BrowseSshButton_Click(object sender, RoutedEventArgs e)
@@ -252,32 +281,21 @@ public partial class HostView : UserControl, IBridgeView
         PinggyPanel.Visibility = isPinggy ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>
-    /// ngrok isn't bundled or auto-installable — it's a separate closed-source binary
-    /// from ngrok.com (unlike Pinggy, which only needs Windows' own OpenSSH client).
-    /// Whenever ngrok is the selected provider and no valid ngrok.exe is configured,
-    /// proactively offers to open the download page instead of waiting for Start
-    /// Sharing to fail with a plain "not found" error.
-    /// </summary>
     private void CheckNgrokAvailability()
     {
+        if (NgrokAvailabilityText is null || DownloadNgrokButton is null) return;
         var isNgrok = (ProviderCombo.SelectedItem as ComboBoxItem)?.Tag as string != "Pinggy";
         if (!isNgrok) return;
-
         var path = NgrokPathBox.Text.Trim();
-        if (path.Length > 0 && File.Exists(path)) return;
+        var available = path.Length > 0 && File.Exists(path);
+        NgrokAvailabilityText.Text = available ? "ngrok is ready." : "ngrok is not installed or its path is missing.";
+        DownloadNgrokButton.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
+    }
 
-        var owner = Window.GetWindow(this);
-        var result = MessageBox.Show(owner,
-            "ngrok.exe wasn't found. AdbBridge doesn't bundle ngrok — it's a separate free " +
-            "download from ngrok.com.\n\nOpen the ngrok download page now?",
-            "ngrok required", MessageBoxButton.YesNo, MessageBoxImage.Information);
-
-        if (result == MessageBoxResult.Yes)
-        {
-            try { Process.Start(new ProcessStartInfo("https://ngrok.com/download") { UseShellExecute = true }); }
-            catch { /* best effort — nothing more useful to do if the browser won't launch */ }
-        }
+    private void DownloadNgrokButton_Click(object sender, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo("https://ngrok.com/download") { UseShellExecute = true }); }
+        catch (Exception ex) { _log.Append($"Could not open ngrok download: {ex.Message}"); }
     }
 
     private void RunAtStartupCheck_Changed(object sender, RoutedEventArgs e)

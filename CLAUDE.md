@@ -1,5 +1,39 @@
 # AdbBridge — project context
 
+## Modern desktop UI
+
+`Theme.xaml` holds shared brushes and rounded control templates. The role chooser
+and both workspaces use a scrollable layout, setup/status cards, device cards,
+collapsible SDK settings and activity logs. The connection overview changes color
+with actual Host reachability, rather than just the local relay listener. Connect
+and sharing show progress; Enter in the address box connects; copy gives temporary
+feedback; selection survives device refreshes; mirroring is disabled without a ready
+device. Missing ngrok is an inline hint and explicit download link, not an automatic
+modal. Default window size is 1080x860; minimum 840x640 with scrolling.
+
+The UI was rendered in isolated XAML previews at 1080px and 840px. The release build
+passed. Installing this design into the live Downloads copy still requires approval:
+automatic review rejected disrupting the running Companion for visual verification.
+
+## Automatic scrcpy setup
+
+Companion's **Mirror device** button uses `ScrcpyInstaller` to reuse a complete saved,
+adjacent, managed, or PATH installation. If missing, it downloads pinned official
+scrcpy 5.0.1 win64, verifies the SHA-256 from upstream Windows documentation, and
+installs the complete archive into the user's LocalAppData tools directory. The button
+shows progress and cancels setup; disconnect/navigation cancels setup too. It then
+saves the discovered path and launches scrcpy with the existing bridge arguments.
+Do not restore the old scrcpy executable file picker as the normal setup flow.
+
+Checks: `dotnet run --project tests/AdbBridge.ScrcpyTests -c Release`.
+Append `-- --install` to exercise the real official download, checksum verification,
+portable installation, and `scrcpy --version` startup. The real install test passed.
+
+User confirmed App Inspection works. Native Studio mirroring remains unresolved:
+after restarting Studio, logs confirm `--codec=avc`, but the agent still exits.
+Three reverse connections reach Studio; device codec errors occur around shutdown.
+These logs do not prove whether codec errors cause or follow stream closure.
+
 ## In-app updater (rebuilt v1.0.2)
 
 `UpdateChecker` locates the latest stable release's ZIP and SHA256SUMS assets.
